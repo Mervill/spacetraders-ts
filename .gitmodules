@@ -1,0 +1,3 @@
+[submodule "external/api-docs"]
+	path = external/api-docs
+	url = https://github.com/SpaceTradersAPI/api-docs.git
