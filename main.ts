@@ -81,10 +81,8 @@ const system = new SystemsApi(configuration, undefined, axoisInstance)
 const agent = new AgentsApi(configuration, undefined, axoisInstance)
 const fleet = new FleetApi(configuration, undefined, axoisInstance)
 
-let ScanRecords = []
 let SeenAgents = []
 
-let AgentShips = []
 async function mongoDBConnect() {
     await mongoClient.connect()
     const db: mongoDB.Db = mongoClient.db(process.env.DB_NAME)
@@ -157,6 +155,44 @@ async function WaitForCooldown(cooldown: Cooldown, log: boolean = true) {
     await WaitForMS(timeLefMS)
 }
 
+async function WaitForShipIdle(shipSymbol: string) {
+    console.log(`${shipSymbol}/waitIdle: Waiting until ship is idle`)
+
+    let navigationResponse = await fleet.getShipNav(shipSymbol)
+    let nav: ShipNav = navigationResponse.data.data
+    if (nav.status == ShipNavStatus.InTransit) {
+        let now = new Date()
+        let waitfor = (new Date(nav.route.arrival)).getTime() - (now).getTime()
+        console.log(`${shipSymbol}/waitIdle: Waiting on transit, complete in ${msToHMS(waitfor)}`)
+        await WaitForMS(waitfor)
+    } else {
+        let cooldownResponse = await fleet.getShipCooldown(shipSymbol)
+        if (cooldownResponse.status == 200) {
+            let cooldown: Cooldown = cooldownResponse.data.data
+            await WaitForCooldown(cooldown)
+        }
+    }
+
+    console.log(`${shipSymbol}/waitIdle: Ship is idle`)
+}
+
+/*async function WaitForIdle(myShip: Ship) {
+    let nav = myShip.nav
+    if (nav.status == ShipNavStatus.InTransit) {
+        let now = new Date()
+        let waitfor = (new Date(nav.route.arrival)).getTime() - (now).getTime()
+        console.log(`${myShip.symbol}/waitIdle: waiting on transit, complete in ${msToHMS(waitfor)}`)
+        await WaitForMS(waitfor)
+    } else {
+        let cooldownResponse = await fleet.getShipCooldown(myShip.symbol)
+        if (cooldownResponse.status == 200) {
+            let cooldown: Cooldown = cooldownResponse.data.data
+            await WaitForCooldown(cooldown)
+        }
+    }
+    console.log(`${myShip.symbol}/waitIdle: ship is idle`)
+}*/
+
 async function DoNavigateTo(myShip: Ship, destinationWaypoint: string) {
 
     const logPrefix: string = `${myShip.symbol}/nav`
@@ -185,7 +221,7 @@ async function DoNavigateTo(myShip: Ship, destinationWaypoint: string) {
     console.log(`${logPrefix}: Flight time is ${msToHMS(totalDeltaTime)}`) //${totalDeltaTime}
     console.log(`${logPrefix}: Flight consumed ${myShip.fuel.consumed.amount} fuel. Fuel: ${myShip.fuel.current}/${myShip.fuel.capacity}`)
     let waitfor = (new Date(myShip.nav.route.arrival)).getTime() - (now).getTime()
-    console.log(`${logPrefix} Waiting for ${msToHMS(waitfor)}`) //${waitfor}
+    console.log(`${logPrefix}: Waiting for ${msToHMS(waitfor)}`) //${waitfor}
     await WaitForMS(waitfor)
     myShip.nav.status = ShipNavStatus.InOrbit // NOTE: Assuming at my own risk!
 }
@@ -234,10 +270,11 @@ async function DoSellCargo(myShip: Ship, sellInfo: Object) {
             runningTotal += sellResponse.data.data.transaction.totalPrice
             lastResponse = sellResponse.data.data
         } else {
-            console.log(`${logPrefix}: Can't sell, no ${cargoSymbol} in cargo!`)
+            console.log(`${logPrefix}: Can't sell ${cargoSymbol}, none in cargo!`)
         }
     }
-    console.log(`${logPrefix}: CREDITS: +$${runningTotal.toLocaleString()} ${lastResponse.agent.credits.toLocaleString()}`)
+    myShip.cargo = lastResponse.cargo
+    console.log(`${logPrefix}: CREDITS: +$${runningTotal.toLocaleString()} | TOTAL: $${lastResponse.agent.credits.toLocaleString()}`)
 }
 
 function PrintCargo(shipCargo: ShipCargo) {
@@ -282,7 +319,8 @@ async function main() {
                 ["Flight Mode"]: ship.nav.flightMode,
                 ["Role"]: ship.registration.role,
                 ["Morale"]: ship.crew.morale,
-                ["Fuel"]: `${ship.fuel.current}/${ship.fuel.capacity}`
+                ["Fuel"]: `${ship.fuel.current}/${ship.fuel.capacity}`,
+                ["Cargo"]: `${ship.cargo.units}/${ship.cargo.capacity}`,
             }
         })
 
@@ -295,25 +333,9 @@ async function main() {
 
     }, DefaultOnRejected)
 
+    await WaitForShipIdle(activeShip)
+
     //await ShipScanLoop(activeShip)
-
-    let myShipResponse = await fleet.getMyShip(activeShip)
-    let myShip: Ship = myShipResponse.data.data
-    PrintCargo(myShip.cargo)
-    
-    //await fleet.orbitShip(activeShip)
-    //await DoNavigateTo(myShip, "X1-ZA40-99095A");
-    //await fleet.dockShip(activeShip)
-    /*await DoSellCargo(myShip, { 
-        "IRON_ORE": -1,
-        "COPPER_ORE": -1,
-        "ALUMINUM_ORE": -1,
-        "SILVER_ORE": -1,
-        "GOLD_ORE": -1,
-        "PLATINUM_ORE": -1,
-        "SILICON_CRYSTALS": -1,
-    })*/
-
     await ShipMineLoop(activeShip, "X1-ZA40-99095A", "X1-ZA40-99095A")
 
     /*fleet.dockShip(value.data.data[0].symbol).then(function (value: any) {
@@ -454,21 +476,8 @@ async function StartShipScan(scannerShip: string, scanOrigin: string) {
 
 async function ShipMineLoop(minerShipSymbol: string, originWaypoint: string, destinationWaypoint: string) {
 
-    /*await fleet.orbitShip(minerShip).then(function (value: AxiosResponse<OrbitShip200Response>) {
-        console.log("%s: Switched to Orbit", minerShip)
-    }, DefaultOnRejected)*/
-
     let myShipResponse = await fleet.getMyShip(minerShipSymbol)
     let myShip: Ship = myShipResponse.data.data
-
-    // wait for any active cooldown to finish
-    {
-        let cooldownResponse = await fleet.getShipCooldown(minerShipSymbol)
-        if (cooldownResponse.status == 200) {
-            let cooldown: Cooldown = cooldownResponse.data.data
-            await WaitForCooldown(cooldown)
-        }
-    }
 
     // if we're docked, go to orbit
     if (myShip.nav.status == ShipNavStatus.Docked) {
@@ -508,6 +517,8 @@ async function ShipMineLoop(minerShipSymbol: string, originWaypoint: string, des
 
     console.log(`${minerShipSymbol}: docked at ${myShip.nav.waypointSymbol}`)
 
+    // test for market?
+
     PrintCargo(myShip.cargo)
 
     await DoSellCargo(myShip, { 
@@ -521,6 +532,7 @@ async function ShipMineLoop(minerShipSymbol: string, originWaypoint: string, des
         "ICE_WATER": -1,
         "QUARTZ_SAND": -1,
         "AMMONIA_ICE": -1,
+        "DIAMONDS": -1,
     })
 
     ShipMineLoop(minerShipSymbol, originWaypoint, destinationWaypoint)
@@ -536,7 +548,8 @@ global.GetShips = (async function (dump: boolean = false) {
                 ["Flight Mode"]: ship.nav.flightMode,
                 ["Role"]: ship.registration.role,
                 ["Morale"]: ship.crew.morale,
-                ["Fuel"]: `${ship.fuel.current}/${ship.fuel.capacity}`
+                ["Fuel"]: `${ship.fuel.current}/${ship.fuel.capacity}`,
+                ["Cargo"]: `${ship.cargo.units}/${ship.cargo.capacity}`,
             }
         })
 
