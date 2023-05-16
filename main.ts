@@ -1,6 +1,8 @@
 import axios, { AxiosResponse } from 'axios'
-import * as mongoDB from "mongodb";
-import * as dotenv from "dotenv";
+import * as mongoDB from "mongodb"
+import * as dotenv from "dotenv"
+import * as Canvas from "canvas"
+import * as MapRender from "./src/MapRenderer"
 import * as utils from "./utils"
 import {
   Configuration,
@@ -28,7 +30,10 @@ import {
   ShipCargo,
   MarketTransaction,
   SellCargo201ResponseData,
+  Waypoint,
+  WaypointTraitSymbolEnum,
 } from './packages/spacetraders-sdk'
+import * as fs from 'fs'
 
 // FLIGHT MODE
 // DRIFT, STEALTH, CRUISE, BURN
@@ -48,6 +53,7 @@ export const mongoClient: mongoDB.MongoClient = new mongoDB.MongoClient(process.
 export const dbCollections: { 
     Agent?: mongoDB.Collection
     ShipScan?: mongoDB.Collection
+    Waypoint?: mongoDB.Collection
 } = { }
 
 export const configuration = new Configuration({
@@ -84,12 +90,15 @@ const fleet = new FleetApi(configuration, undefined, axoisInstance)
 let SeenAgents = []
 
 async function mongoDBConnect() {
+    // NOTE: mongodb connection keeps the prorgam alive?
     await mongoClient.connect()
     const db: mongoDB.Db = mongoClient.db(process.env.DB_NAME)
     const shipScanCollection: mongoDB.Collection = db.collection("ShipScan")
     const agentCollection: mongoDB.Collection = db.collection("Agent")
+    const waypointCollection: mongoDB.Collection = db.collection("Waypoint")
     dbCollections.ShipScan = shipScanCollection
     dbCollections.Agent = agentCollection
+    dbCollections.Waypoint = waypointCollection
     console.log(`Successfully connected to database: ${db.databaseName}`)
 }
 
@@ -142,6 +151,10 @@ async function WaitForMS(timeMS: number) {
     return new Promise((resolve) => {
         setTimeout(resolve, timeMS)
     })
+}
+
+async function WaitForTransit(route: ShipNav) {
+
 }
 
 async function WaitForCooldown(cooldown: Cooldown, log: boolean = true) {
@@ -226,7 +239,7 @@ async function DoNavigateTo(myShip: Ship, destinationWaypoint: string) {
     myShip.nav.status = ShipNavStatus.InOrbit // NOTE: Assuming at my own risk!
 }
 
-async function DoSellCargo(myShip: Ship, sellInfo: Object) {
+async function DoSellCargo(myShip: Ship, sellInfo: Object, logWhenNoneInInventory: boolean = true) {
 
     const logPrefix: string = `${myShip.symbol}/sell`
 
@@ -270,11 +283,43 @@ async function DoSellCargo(myShip: Ship, sellInfo: Object) {
             runningTotal += sellResponse.data.data.transaction.totalPrice
             lastResponse = sellResponse.data.data
         } else {
-            console.log(`${logPrefix}: Can't sell ${cargoSymbol}, none in cargo!`)
+            if (logWhenNoneInInventory) {
+                console.log(`${logPrefix}: Can't sell ${cargoSymbol}, none in cargo!`)
+            }
         }
     }
     myShip.cargo = lastResponse.cargo
     console.log(`${logPrefix}: CREDITS: +$${runningTotal.toLocaleString()} | TOTAL: $${lastResponse.agent.credits.toLocaleString()}`)
+}
+
+function PrintShipTable(ships: Array<Ship>) {
+    let tabledata = []
+    ships.forEach((ship) => {
+        
+        tabledata[ship.symbol] = {
+            ["Role"]: ship.registration.role,
+            ["Waypoint"]: ship.nav.waypointSymbol, 
+            ["Status"]: ship.nav.status,
+            ["Flight Mode"]: ship.nav.flightMode,
+            ["Fuel"]: `${ship.fuel.current}/${ship.fuel.capacity}`,
+            ["Cargo"]: `${ship.cargo.units}/${ship.cargo.capacity}`,
+            
+            //["Waypoint"]: ship.nav.waypointSymbol, 
+            //["Status"]: ship.nav.status,
+            //["Flight Mode"]: ship.nav.flightMode,
+            //["Role"]: ship.registration.role,
+            //["Morale"]: ship.crew.morale,
+            //["Fuel"]: `${ship.fuel.current}/${ship.fuel.capacity}`,
+            //["Cargo"]: `${ship.cargo.units}/${ship.cargo.capacity}`,
+        }
+
+        if (ship.nav.status == ShipNavStatus.InTransit) {
+            let deltaTime = CalcShipRouteTimeRemaining(ship.nav.route)
+            tabledata[ship.symbol]["Flight Time Remaining"] = `${msToHMS(deltaTime)}`
+        }
+    })
+    console.log("Your Ships:")
+    console.table(tabledata)
 }
 
 function PrintCargo(shipCargo: ShipCargo) {
@@ -293,16 +338,15 @@ async function main() {
 
     await mongoDBConnect();
 
-    await agent.getMyAgent().then(function (value: AxiosResponse<GetMyAgent200Response>) {
-        console.log(`Connected to SpaceTraders.io!`)
-        console.log(`${value.data.data.symbol}`)
-        console.log(`Credits: ${value.data.data.credits.toLocaleString()}`)
-        console.log(`Headquarters: ${value.data.data.headquarters}`)
-        console.log(`accountId: ${value.data.data.accountId}`)
-    }, DefaultOnRejected)
+    let agentResponse = await agent.getMyAgent()
+    console.log(`Connected to SpaceTraders.io!`)
+    console.log(`${agentResponse.data.data.symbol}`)
+    console.log(`Credits: ${agentResponse.data.data.credits.toLocaleString()}`)
+    console.log(`Headquarters: ${agentResponse.data.data.headquarters}`)
+    console.log(`accountId: ${agentResponse.data.data.accountId}`)
 
     console.log("loading seen agents...")
-    const allAgents = await dbCollections.Agent.find({})
+    const allAgents = dbCollections.Agent.find({})
     for await (const agent of allAgents){
         SeenAgents.push(agent.symbol)
     }
@@ -310,37 +354,15 @@ async function main() {
 
     let activeShip: string = ""
 
-    await fleet.getMyShips().then(async function (value: AxiosResponse<GetMyShips200Response>) {        
-        var tabledata = []
-        value.data.data.forEach((ship) => {
-            tabledata[ship.symbol] = {
-                ["Waypoint"]: ship.nav.waypointSymbol, 
-                ["Status"]: ship.nav.status,
-                ["Flight Mode"]: ship.nav.flightMode,
-                ["Role"]: ship.registration.role,
-                ["Morale"]: ship.crew.morale,
-                ["Fuel"]: `${ship.fuel.current}/${ship.fuel.capacity}`,
-                ["Cargo"]: `${ship.cargo.units}/${ship.cargo.capacity}`,
-            }
-        })
-
-        console.log("Your Ships:")
-        console.table(tabledata)
-        //console.log(JSON.stringify(value.data, undefined, 2))
-
-        activeShip = value.data.data[0].symbol
-        //scanOrigin = ""
-
-    }, DefaultOnRejected)
+    let getMyShipsResponse = await fleet.getMyShips()
+    PrintShipTable(getMyShipsResponse.data.data)
+    activeShip = getMyShipsResponse.data.data[0].symbol
 
     await WaitForShipIdle(activeShip)
 
-    //await ShipScanLoop(activeShip)
-    await ShipMineLoop(activeShip, "X1-ZA40-99095A", "X1-ZA40-99095A")
+    //ShipScanLoop("XKEYSCORE-2")
+    ShipMineLoop(activeShip, "X1-ZA40-99095A", "X1-ZA40-99095A")
 
-    /*fleet.dockShip(value.data.data[0].symbol).then(function (value: any) {
-        console.log(JSON.stringify(value.data, undefined, 2))
-    }, DefaultOnRejected)*/
 }
 
 // ==========
@@ -521,6 +543,7 @@ async function ShipMineLoop(minerShipSymbol: string, originWaypoint: string, des
 
     PrintCargo(myShip.cargo)
 
+    //PRECIOUS_STONES
     await DoSellCargo(myShip, { 
         "IRON_ORE": -1,
         "COPPER_ORE": -1,
@@ -533,33 +556,17 @@ async function ShipMineLoop(minerShipSymbol: string, originWaypoint: string, des
         "QUARTZ_SAND": -1,
         "AMMONIA_ICE": -1,
         "DIAMONDS": -1,
-    })
+    }, false)
 
     ShipMineLoop(minerShipSymbol, originWaypoint, destinationWaypoint)
 }
 
 global.GetShips = (async function (dump: boolean = false) {
-    await fleet.getMyShips().then(function (value: AxiosResponse<GetMyShips200Response>) {
-        var tabledata = []
-        value.data.data.forEach((ship) => {
-            tabledata[ship.symbol] = {
-                ["Waypoint"]: ship.nav.waypointSymbol, 
-                ["Status"]: ship.nav.status,
-                ["Flight Mode"]: ship.nav.flightMode,
-                ["Role"]: ship.registration.role,
-                ["Morale"]: ship.crew.morale,
-                ["Fuel"]: `${ship.fuel.current}/${ship.fuel.capacity}`,
-                ["Cargo"]: `${ship.cargo.units}/${ship.cargo.capacity}`,
-            }
-        })
-
-        console.log("Your Ships:")
-        console.table(tabledata)
-        if (dump) {
-            console.log(JSON.stringify(value.data.data, undefined, 2))
-        }
-
-    }, DefaultOnRejected)
+    let getMyShipsResponse = await fleet.getMyShips()
+    PrintShipTable(getMyShipsResponse.data.data)
+    if (dump) {
+        console.log(JSON.stringify(getMyShipsResponse.data.data, undefined, 2))
+    }
 })
 
 global.ShipTrySellCargo = (async function (shipSymbol: string, sellInfo: object) {
@@ -586,13 +593,109 @@ global.ShipTryOrbit = (async function (shipSymbol: string) {
     console.log(`${shipSymbol}/ShipTryOrbit: entered orbit around ${nav.waypointSymbol}`)
 })
 
-global.whoami = (async function() {
-    await agent.getMyAgent().then(function (value: AxiosResponse<GetMyAgent200Response>) {
-        console.log(`[whoami] ${value.data.data.symbol}`)
-        console.log(`[whoami] Credits: ${value.data.data.credits.toLocaleString()}`)
-        console.log(`[whoami] Headquarters: ${value.data.data.headquarters}`)
-        console.log(`[whoami] accountId: ${value.data.data.accountId}`)
-    }, DefaultOnRejected)
+global.ShipManualNavigateTo = (async function (shipSymbol: string, waypointSymbol: string) {
+    let myShipResponse = await fleet.getMyShip(shipSymbol)
+    let myShip: Ship = myShipResponse.data.data
+    await DoNavigateTo(myShip, waypointSymbol)
 })
 
+async function GetWaypointRecord(systemSymbol: string, waypointSymbol: string, forceAPI: boolean = false) {
+    
+    let waypointRecord = undefined
+
+    let dbWaypointRecord = await dbCollections.Waypoint.findOne({
+        "data.systemSymbol": systemSymbol,
+        "data.symbol": waypointSymbol,
+    })
+    
+    if ((!dbWaypointRecord) || (forceAPI)) {
+        let getWaypointResponse = await system.getWaypoint(systemSymbol, waypointSymbol)
+        if (!dbWaypointRecord) {
+            waypointRecord = {
+                firstRetrieved: new Date(),
+                lastRetrieved: new Date(),
+                data: getWaypointResponse.data.data,
+            }
+            await dbCollections.Waypoint.insertOne(waypointRecord)
+        } else {
+            dbWaypointRecord.lastRetrieved = new Date()
+            dbWaypointRecord.data = getWaypointResponse.data.data    
+            await dbCollections.Waypoint.updateOne(
+                { _id: dbWaypointRecord._id },
+                { $set: dbWaypointRecord })
+            waypointRecord = dbWaypointRecord
+        }
+    } else {
+        waypointRecord = dbWaypointRecord
+    }
+
+    return waypointRecord
+}
+
+function PrintWaypoints(wapoints: Array<Waypoint>) {
+    let tabledata = []
+    wapoints.forEach(wp => {
+        let wpEntry = {
+            ["Type"]: wp.type,
+            ["Faction"]: wp.faction.symbol,
+        }
+
+        let market = wp.traits.find((s) => s.symbol == WaypointTraitSymbolEnum.Marketplace)
+        if (market) {
+            wpEntry["Market"] = "Market"
+        }
+
+        let shipyd = wp.traits.find((s) => s.symbol == WaypointTraitSymbolEnum.Shipyard)
+        if (shipyd) {
+            wpEntry["Shipyard"] = "Shipyard"
+        }
+
+        tabledata[wp.symbol] = wpEntry
+    });
+    console.table(tabledata)
+}
+
+global.GetWaypointRecord = async function (systemSymbol: string, waypointSymbol: string, forceAPI: boolean = false) {
+    let record = await GetWaypointRecord(systemSymbol, waypointSymbol, forceAPI)
+    PrintWaypoints([ (record as any).data ])
+    //console.log(JSON.stringify(record, undefined, 2))
+}
+
+global.GetAllSystemWaypoints = async function (systemSymbol: string, forceAPI: boolean = false) {
+    let getSystemResponse = await system.getSystem(systemSymbol)
+    let records: Array<Waypoint> = []
+    for (let wp of getSystemResponse.data.data.waypoints) {
+        let record = await GetWaypointRecord(systemSymbol, wp.symbol, forceAPI)
+        records.push(record.data)
+    }
+    PrintWaypoints(records)
+}
+
+// https://stackoverflow.com/questions/33599688/how-to-use-es8-async-await-with-streams
+global.DrawMap = (async function() {
+    {
+        const jsonText: string = fs.readFileSync("./X1-ZA40-28549E.json", "utf-8")
+        
+        let gateData = JSON.parse(jsonText)
+        let array = gateData.data.connectedSystems as Array<any>
+        MapRender.Render(array, "./28549E-testout.png")
+    }
+    {
+        const jsonText: string = fs.readFileSync("./X1-HN46-66989X.json", "utf-8")
+        
+        let gateData = JSON.parse(jsonText)
+        let array = gateData.data.connectedSystems as Array<any>
+        MapRender.Render(array, "./66989X-testout.png")
+    }
+})
+
+global.whoami = (async function() {
+    let agentResponse = await agent.getMyAgent()
+    console.log(`[whoami] ${agentResponse.data.data.symbol}`)
+    console.log(`[whoami] Credits: ${agentResponse.data.data.credits.toLocaleString()}`)
+    console.log(`[whoami] Headquarters: ${agentResponse.data.data.headquarters}`)
+    console.log(`[whoami] accountId: ${agentResponse.data.data.accountId}`)
+})
+
+global.DrawMap()
 main()
