@@ -1,6 +1,5 @@
 import * as Canvas from 'canvas'
 import * as fs from 'fs'
-import { min } from 'rxjs'
 //import * as vr from 'voronoi'
 import { Voronoi, BoundingBox, Site, Diagram } from 'voronoijs'
 
