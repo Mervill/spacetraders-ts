@@ -1,5 +1,6 @@
 import * as Canvas from 'canvas'
 import * as fs from 'fs'
+import { min } from 'rxjs'
 //import * as vr from 'voronoi'
 import { Voronoi, BoundingBox, Site, Diagram } from 'voronoijs'
 
@@ -48,10 +49,21 @@ export function Render(data: Array<any>, filename: string) {
         }
     }
 
-    const canvasWidth = Math.abs(minpoint.x) + maxpoint.x
-    const canvasHeight = Math.abs(minpoint.y) + maxpoint.y
-    const halfCanvasWidth = canvasWidth / 2
-    const halfCanvasHeight = canvasHeight / 2
+    let stdPadding = 50
+    minpoint.x -= stdPadding
+    maxpoint.x += stdPadding
+    minpoint.y -= stdPadding
+    maxpoint.y += stdPadding
+
+    const halfCanvasWidth = Math.max(Math.abs(minpoint.x), maxpoint.x)
+    const halfCanvasHeight = Math.max(Math.abs(minpoint.y), maxpoint.y)
+    const canvasWidth = halfCanvasWidth * 2
+    const canvasHeight = halfCanvasHeight * 2
+
+    //const canvasWidth = Math.abs(minpoint.x) + maxpoint.x
+    //const canvasHeight = Math.abs(minpoint.y) + maxpoint.y
+    //const halfCanvasWidth = canvasWidth / 2
+    //const halfCanvasHeight = canvasHeight / 2
 
     console.log(minpoint)
     console.log(maxpoint)
@@ -63,8 +75,8 @@ export function Render(data: Array<any>, filename: string) {
 
     for (let x = 0; x < data.length; x++) {
         let entry = data[x]
-        //entry.x += halfCanvasWidth
-        //entry.y += halfCanvasHeight
+        entry.x += halfCanvasWidth
+        entry.y += halfCanvasHeight
         sites.push({ id: 0, x: entry.x, y: entry.y })
     }
 
@@ -76,11 +88,10 @@ export function Render(data: Array<any>, filename: string) {
     ctx.fillStyle = 'white'
     ctx.fillRect(0, 0, canvasWidth,canvasHeight)
 
-    ctx.lineWidth = 0
-    ctx.fillStyle = 'white'
+    //ctx.lineWidth = 0
+    //ctx.fillStyle = 'white'
     //ctx.strokeStyle = 'white'
 
-    //let seenFactions = {}
     diagram.cells.forEach(cell => {
         if (cell && cell.halfedges.length > 2) {
             const segments = cell.halfedges.map(edge => edge.getEndpoint());
@@ -92,17 +103,11 @@ export function Render(data: Array<any>, filename: string) {
             ctx.closePath()
 
             let dataEntry = data.find(e => (e.x == cell.site.x) && (e.y == cell.site.y))
-
-            //let faction = data[cell.site.id].factionSymbol
-            //seenFactions[faction] = 1
-            //ctx.fillStyle = factionColors[faction] ?? "black"
             ctx.fillStyle = factionColors[dataEntry.factionSymbol] ?? "#333333"
             ctx.fill()
-            //ctx.stroke()
         }
     })
 
-    //console.log(JSON.stringify(seenFactions, undefined, 2))
     ctx.strokeStyle = 'black'
     ctx.lineWidth = 2
     diagram.edges.forEach(edge => {
@@ -112,6 +117,7 @@ export function Render(data: Array<any>, filename: string) {
         ctx.stroke()
     })
 
+    /*
     ctx.strokeStyle = 'white'
     ctx.lineWidth = 2
     ctx.beginPath()
@@ -125,6 +131,12 @@ export function Render(data: Array<any>, filename: string) {
     ctx.moveTo(0, halfCanvasHeight)
     ctx.lineTo(canvasWidth, halfCanvasHeight)
     ctx.stroke()
+    */
+
+    ctx.lineWidth = 0
+    ctx.fillStyle = 'white'
+    ctx.fillRect(halfCanvasWidth, 0, 1, canvasHeight)
+    ctx.fillRect(0, halfCanvasHeight, canvasWidth, 1)
 
     for (let entry of data) {
         let radius = 10
@@ -135,13 +147,20 @@ export function Render(data: Array<any>, filename: string) {
             ctx.fillStyle = 'green'
         }
         if (entry.symbol == "X1-HN46") {
-            ctx.fillStyle = 'red'
+            ctx.fillStyle = 'yellow'
         }
         ctx.fill()
         ctx.lineWidth = 2
         //ctx.strokeStyle = factionColors[entry.factionSymbol] ?? "#333333"
         ctx.strokeStyle = 'black'
         ctx.stroke()
+
+        ctx.lineWidth = 0
+        ctx.fillStyle = 'black'
+        //ctx.beginPath()
+        ctx.fillRect(entry.x - 1, entry.y, 3, 1)
+        ctx.fillRect(entry.x, entry.y - 1, 1, 3)
+        //ctx.stroke()
     }
 
     const out = fs.createWriteStream(filename)

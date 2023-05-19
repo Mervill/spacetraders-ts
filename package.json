@@ -8,7 +8,6 @@
     "canvas": "^2.11.2",
     "dotenv": "^16.0.3",
     "mongodb": "^5.5.0",
-    "rxjs": "^7.8.1"
     "voronoijs": "^1.0.0"
   },
   "devDependencies": {
