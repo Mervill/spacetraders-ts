@@ -9,3 +9,7 @@ import {
 export function ShortenShipNavFlightMode(value: ShipNavFlightMode): string {
     return value.substring(0, 2)
 }
+
+export function ISOTimeStamp(): string {
+    return (new Date().toISOString())
+}

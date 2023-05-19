@@ -130,10 +130,6 @@ function CalcShipRouteTimeRemaining(route: ShipNavRoute) {
     return timeRemaining
 }
 
-function ISOTimeStamp(): string {
-    return (new Date().toISOString())
-}
-
 function msToHMS(ms) {
     // 1- Convert to seconds:
     let seconds = Math.floor(ms / 1000);
@@ -147,8 +143,8 @@ function msToHMS(ms) {
     return hours.toString().padStart(2,"0")+":"+minutes.toString().padStart(2,"0")+":"+seconds.toString().padStart(2,"0");
 }
 
-async function WaitForMS(timeMS: number) {
-    return new Promise((resolve) => {
+function WaitForMS(timeMS: number): Promise<never> {
+    return new Promise<never>((resolve) => {
         setTimeout(resolve, timeMS)
     })
 }
@@ -223,18 +219,11 @@ async function DoNavigateTo(myShip: Ship, destinationWaypoint: string) {
 
     let totalDeltaTime: number = (new Date(myShip.nav.route.arrival)).getTime() - (new Date(myShip.nav.route.departureTime)).getTime()
 
-    console.log(`${logPrefix}: Navigating to ${myShip.nav.waypointSymbol} ${myShip.nav.route.destination.type}`)
-    //console.log(JSON.stringify(myShip.fuel.consumed))
-    //console.log(JSON.stringify(myShip.nav))
-    let now = new Date()
-    //console.log(now.toISOString())
-    //console.log(myShip.nav.route.departureTime)
-    //console.log(new Date(myShip.nav.route.departureTime).getTime() - now.getTime())
-    //console.log(myShip.nav.route.arrival)
+    console.log(`${logPrefix}: Navigating to ${myShip.nav.route.destination.symbol} ${myShip.nav.route.destination.type}`)
     console.log(`${logPrefix}: Flight time is ${msToHMS(totalDeltaTime)}`) //${totalDeltaTime}
-    console.log(`${logPrefix}: Flight consumed ${myShip.fuel.consumed.amount} fuel. Fuel: ${myShip.fuel.current}/${myShip.fuel.capacity}`)
-    let waitfor = (new Date(myShip.nav.route.arrival)).getTime() - (now).getTime()
-    console.log(`${logPrefix}: Waiting for ${msToHMS(waitfor)}`) //${waitfor}
+    console.log(`${logPrefix}: Flight consum(ed/ing) ${myShip.fuel.consumed.amount} fuel. Fuel: ${myShip.fuel.current}/${myShip.fuel.capacity}`)
+    let waitfor = (new Date(myShip.nav.route.arrival)).getTime() - (new Date()).getTime()
+    console.log(`${logPrefix}: Waiting for ${msToHMS(waitfor)}`)
     await WaitForMS(waitfor)
     myShip.nav.status = ShipNavStatus.InOrbit // NOTE: Assuming at my own risk!
 }
@@ -334,34 +323,7 @@ function PrintCargo(shipCargo: ShipCargo) {
 
 async function main() {
     
-    console.log("The current time is %s", new Date().toLocaleTimeString())
 
-    await mongoDBConnect();
-
-    let agentResponse = await agent.getMyAgent()
-    console.log(`Connected to SpaceTraders.io!`)
-    console.log(`${agentResponse.data.data.symbol}`)
-    console.log(`Credits: ${agentResponse.data.data.credits.toLocaleString()}`)
-    console.log(`Headquarters: ${agentResponse.data.data.headquarters}`)
-    console.log(`accountId: ${agentResponse.data.data.accountId}`)
-
-    console.log("loading seen agents...")
-    const allAgents = dbCollections.Agent.find({})
-    for await (const agent of allAgents){
-        SeenAgents.push(agent.symbol)
-    }
-    console.log("...done")
-
-    let activeShip: string = ""
-
-    let getMyShipsResponse = await fleet.getMyShips()
-    PrintShipTable(getMyShipsResponse.data.data)
-    activeShip = getMyShipsResponse.data.data[0].symbol
-
-    await WaitForShipIdle(activeShip)
-
-    //ShipScanLoop("XKEYSCORE-2")
-    ShipMineLoop(activeShip, "X1-ZA40-99095A", "X1-ZA40-99095A")
 
 }
 
@@ -461,8 +423,8 @@ async function StartShipScan(scannerShip: string, scanOrigin: string) {
                 ["Status"]: nav.status,
                 ["FM"]: utils.ShortenShipNavFlightMode(nav.flightMode),
                 ["ROLE"]: ship.registration.role,
-                ["Departure"]: nav.route.departure.symbol + ", " + nav.route.departure.type,
-                ["Destination"]: nav.route.destination.symbol + ", " + nav.route.destination.type,
+                ["Departure"]: `${nav.route.departure.symbol}, ${nav.route.departure.type}`,
+                ["Destination"]: `${nav.route.destination.symbol}, ${nav.route.destination.type}`,
                 ["Flight Total"]: msToHMS((new Date(nav.route.arrival)).getTime() - (new Date(nav.route.departureTime)).getTime()),
                 //["Arrival Time"]: new Date(nav.route.arrival).toLocaleTimeString(),
                 ["Time Remaining"]: msToHMS(CalcShipRouteTimeRemaining(nav.route))
@@ -481,14 +443,8 @@ async function StartShipScan(scannerShip: string, scanOrigin: string) {
 
         //console.log(JSON.stringify(cooldown, undefined, 2))
     }, DefaultOnRejected)
-    
-    await new Promise((resolve) => {
-        let now: Date = new Date()
-        let expiration: Date = new Date(cooldown.expiration)
-        let timeLefMS = expiration.getTime() - now.getTime()
-        console.log(`${scannerShip} is currently in cooldown, expiry ${msToHMS(timeLefMS)}`)
-        setTimeout(resolve, timeLefMS)
-    })
+
+    await WaitForCooldown(cooldown)
 
     StartShipScan(scannerShip, scanOrigin)
 }
@@ -496,20 +452,21 @@ async function StartShipScan(scannerShip: string, scanOrigin: string) {
 // ==========
 // MINE LOOP
 
-async function ShipMineLoop(minerShipSymbol: string, originWaypoint: string, destinationWaypoint: string) {
+async function ShipMineLoop(minerShipSymbol: string, sellWaypoint: string, mineWaypoint: string) {
 
     let myShipResponse = await fleet.getMyShip(minerShipSymbol)
     let myShip: Ship = myShipResponse.data.data
 
     // if we're docked, go to orbit
     if (myShip.nav.status == ShipNavStatus.Docked) {
-        let orbitShipReponse = await fleet.orbitShip(minerShipSymbol)
+        let orbitShipReponse = await fleet.orbitShip(myShip.symbol)
         myShip.nav = orbitShipReponse.data.data.nav
     }
+    console.log(`${myShip.symbol}/extract: orbiting ${myShip.nav.waypointSymbol}`)
 
-    console.log(`${minerShipSymbol}/extract: orbiting ${myShip.nav.waypointSymbol}`)
-
-    await DoNavigateTo(myShip, destinationWaypoint);
+    if (myShip.nav.waypointSymbol != mineWaypoint) {
+        await DoNavigateTo(myShip, mineWaypoint)
+    }
 
     if (myShip.cargo.units < myShip.cargo.capacity) {
         do {
@@ -518,26 +475,27 @@ async function ShipMineLoop(minerShipSymbol: string, originWaypoint: string, des
             let cooldown: Cooldown = extractResponse.data.data.cooldown
             let extracted: Extraction = extractResponse.data.data.extraction
             myShip.cargo = extractResponse.data.data.cargo
-    
+
             //console.log(JSON.stringify(extractResponse.data.data.extraction, undefined, 2))
             //console.log(JSON.stringify(extractResponse.data.data.cargo, undefined, 2))
             console.log(`${extracted.shipSymbol}/extract: extracted resources: ${extracted.yield.symbol} x${extracted.yield.units}`)
             console.log(`${extracted.shipSymbol}/extract: cargo: ${myShip.cargo.units}/${myShip.cargo.capacity}`)
-            
+
             await WaitForCooldown(cooldown)
         } while (myShip.cargo.units < myShip.cargo.capacity)
     } else {
-        console.log(`${minerShipSymbol}/extract: Not extracting resources, cargo full`)
+        console.log(`${myShip.symbol}/extract: Not extracting resources, cargo full`)
     }
 
-    await DoNavigateTo(myShip, originWaypoint);
+    if (myShip.nav.waypointSymbol != sellWaypoint) {
+        await DoNavigateTo(myShip, sellWaypoint)
+    }
 
     if (myShip.nav.status == ShipNavStatus.InOrbit) {
         let dockShipRequest = await fleet.dockShip(myShip.symbol)
         myShip.nav = dockShipRequest.data.data.nav
     }
-
-    console.log(`${minerShipSymbol}: docked at ${myShip.nav.waypointSymbol}`)
+    console.log(`${myShip.symbol}: docked at ${myShip.nav.waypointSymbol}`)
 
     // test for market?
 
@@ -558,7 +516,7 @@ async function ShipMineLoop(minerShipSymbol: string, originWaypoint: string, des
         "DIAMONDS": -1,
     }, false)
 
-    ShipMineLoop(minerShipSymbol, originWaypoint, destinationWaypoint)
+    ShipMineLoop(minerShipSymbol, sellWaypoint, mineWaypoint)
 }
 
 global.GetShips = (async function (dump: boolean = false) {
@@ -678,14 +636,14 @@ global.DrawMap = (async function() {
         
         let gateData = JSON.parse(jsonText)
         let array = gateData.data.connectedSystems as Array<any>
-        MapRender.Render(array, "./28549E-testout.png")
+        MapRender.Render(array, "./X1-ZA40-28549E-gatemap.png")
     }
     {
         const jsonText: string = fs.readFileSync("./X1-HN46-66989X.json", "utf-8")
         
         let gateData = JSON.parse(jsonText)
         let array = gateData.data.connectedSystems as Array<any>
-        MapRender.Render(array, "./66989X-testout.png")
+        MapRender.Render(array, "./X1-HN46-66989X-gatemap.png")
     }
 })
 
