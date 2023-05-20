@@ -15,13 +15,8 @@ import {
   AgentsApi,
   ShipNav,
   ShipNavRoute,
-  GetMyShips200Response,
-  GetMyAgent200Response,
-  CreateShipShipScan201Response,
-  GetShipCooldown200Response,
   Ship,
   ScannedShip,
-  OrbitShip200Response,
   ShipNavStatus,
   NavigateShipRequest,
   ShipFuel,
@@ -322,8 +317,6 @@ function PrintCargo(shipCargo: ShipCargo) {
 }
 
 async function main() {
-    
-
 
 }
 
@@ -331,37 +324,8 @@ async function main() {
 // SCAN LOOP
 
 async function ShipScanLoop(scannerShip: string) {
-    
-    let scanOrigin: string
-
-    await fleet.orbitShip(scannerShip).then(function (value: AxiosResponse<OrbitShip200Response>) {
-        console.log("%s: Switched to Orbit", scannerShip)
-        /*
-        let nav: ShipNav = value.data.data.nav
-        scanOrigin = nav.waypointSymbol
-        let tabledata = {}
-        tabledata[scannerShip] = {
-            //["System"]: nav.systemSymbol,
-            ["Waypoint"]: nav.waypointSymbol,
-            ["Status"]: nav.status,
-            ["Flight Mode"]: nav.flightMode
-        }
-        console.table(tabledata)
-        */
-    }, DefaultOnRejected)
-
-    await fleet.getShipCooldown(scannerShip).then(async function (value: AxiosResponse<GetShipCooldown200Response>){
-        if (value.status == 200) {
-            await new Promise((resolve) => {
-                let now: Date = new Date()
-                let expiration: Date = new Date(value.data.data.expiration)
-                let timeLefMS = expiration.getTime() - now.getTime()
-                console.log(`${scannerShip} is currently in cooldown, expiry ${msToHMS(timeLefMS)}`)
-                setTimeout(resolve, timeLefMS)
-            })
-        }
-    }, DefaultOnRejected)
-
+    let orbitResponse = await fleet.orbitShip(scannerShip)
+    let scanOrigin: string = orbitResponse.data.data.nav.waypointSymbol
     await StartShipScan(scannerShip, scanOrigin)
 }
 
@@ -369,80 +333,81 @@ async function StartShipScan(scannerShip: string, scanOrigin: string) {
 
     let cooldown: Cooldown = undefined
 
-    await fleet.createShipShipScan(scannerShip).then(async function (value: AxiosResponse<CreateShipShipScan201Response>) {
-        let ships = value.data.data.ships
-        //let cooldown: Cooldown = value.data.data.cooldown
-        cooldown = value.data.data.cooldown
-        let now = new Date()
+    let shipScanResponse = await fleet.createShipShipScan(scannerShip)
+    let ships = shipScanResponse.data.data.ships
+    //let cooldown: Cooldown = value.data.data.cooldown
+    cooldown = shipScanResponse.data.data.cooldown
+    let now = new Date()
+
+    let scanRecord = {
+        //_id: new mongoDB.ObjectId(),
+        //time: tiemstamp,
+        time: now,
+        scanner: scannerShip,
+        scanOrigin: scanOrigin,
+        scanData: ships
+    }
     
-        let scanRecord = {
-            //_id: new mongoDB.ObjectId(),
-            //time: tiemstamp,
-            time: now,
-            scanner: scannerShip,
-            scanOrigin: scanOrigin,
-            scanData: ships
-        }
-        
-        dbCollections.ShipScan.insertOne(scanRecord)
+    dbCollections.ShipScan.insertOne(scanRecord)
 
-        let newAgents = []
-        let tabledata = {}
-        
-        // NOTE: carefull! currently if an agent ownes
-        // multiple ships in a scan, multipe updates of that
-        // agent's record are sent to the db
-        for (let x: number = 0; x < ships.length; x++) {
-            const ship: ScannedShip = ships[x]
-            
-            let agentName = SplitShipSymbol(ship.symbol).AgentName
+    let newAgents = []
+    let tabledata = {}
     
-            const agentRecord = await dbCollections.Agent.findOne({
-                symbol: agentName
-            })
+    // NOTE: carefull! currently if an agent ownes
+    // multiple ships in a scan, multipe updates of that
+    // agent's record are sent to the db
+    for (let x: number = 0; x < ships.length; x++) {
+        const ship: ScannedShip = ships[x]
+        
+        let agentName = SplitShipSymbol(ship.symbol).AgentName
 
-            if (!agentRecord) {
-                await dbCollections.Agent.insertOne({
-                    symbol: agentName,
-                    firstSeen: now,
-                    lastSeen: now
-                })
-                SeenAgents.push(agentName)
-                newAgents.push(agentName)
-            } else {
-                await dbCollections.Agent.updateOne(
-                    { _id: agentRecord._id }, 
-                    { $set: { lastSeen: now }})
+        const agentRecord = await dbCollections.Agent.findOne({
+            symbol: agentName
+        })
+
+        if (!agentRecord) {
+            let newRecord = {
+                symbol: agentName,
+                firstSeen: now,
+                lastSeen: now
             }
-            
-            let nav = ship.nav
-            tabledata[ship.symbol] = {
-                ["Agent"]: agentName,
-                //["System"]: nav.systemSymbol,
-                ["Waypoint"]: nav.waypointSymbol,
-                ["Status"]: nav.status,
-                ["FM"]: utils.ShortenShipNavFlightMode(nav.flightMode),
-                ["ROLE"]: ship.registration.role,
-                ["Departure"]: `${nav.route.departure.symbol}, ${nav.route.departure.type}`,
-                ["Destination"]: `${nav.route.destination.symbol}, ${nav.route.destination.type}`,
-                ["Flight Total"]: msToHMS((new Date(nav.route.arrival)).getTime() - (new Date(nav.route.departureTime)).getTime()),
-                //["Arrival Time"]: new Date(nav.route.arrival).toLocaleTimeString(),
-                ["Time Remaining"]: msToHMS(CalcShipRouteTimeRemaining(nav.route))
-            }
+            await dbCollections.Agent.insertOne(newRecord)
+            SeenAgents.push(newRecord)
+            newAgents.push(agentName)
+        } else {
+            await dbCollections.Agent.updateOne(
+                { _id: agentRecord._id }, 
+                { $set: { lastSeen: now }})
+            SeenAgents.find(s => s.symbol == agentRecord.symbol).lastSeen = now
         }
         
-        console.log("[%s] %s: Preformed Ship Scan, %d Contacts", now.toISOString(), scannerShip, ships.length)
-        console.table(tabledata)
-        
-        if (newAgents.length != 0) {
-            console.log("New Agents Spotted:", JSON.stringify(newAgents))
-            console.log(`Seen ${SeenAgents.length} agents in total`)
+        let nav = ship.nav
+        tabledata[ship.symbol] = {
+            ["Agent"]: agentName,
+            //["System"]: nav.systemSymbol,
+            ["Waypoint"]: nav.waypointSymbol,
+            ["Status"]: nav.status,
+            ["FM"]: utils.ShortenShipNavFlightMode(nav.flightMode),
+            ["ROLE"]: ship.registration.role,
+            ["Departure"]: `${nav.route.departure.symbol}, ${nav.route.departure.type}`,
+            ["Destination"]: `${nav.route.destination.symbol}, ${nav.route.destination.type}`,
+            ["Flight Total"]: msToHMS((new Date(nav.route.arrival)).getTime() - (new Date(nav.route.departureTime)).getTime()),
+            //["Arrival Time"]: new Date(nav.route.arrival).toLocaleTimeString(),
+            ["Time Remaining"]: msToHMS(CalcShipRouteTimeRemaining(nav.route))
         }
-        
-        console.log(`Next possible scan at ${cooldown.expiration}`)
+    }
+    
+    console.log("[%s] %s: Preformed Ship Scan, %d Contacts", now.toISOString(), scannerShip, ships.length)
+    console.table(tabledata)
+    
+    if (newAgents.length != 0) {
+        console.log("New Agents Spotted:", JSON.stringify(newAgents))
+        console.log(`Seen ${SeenAgents.length} agents in total`)
+    }
+    
+    console.log(`Next possible scan at ${cooldown.expiration}`)
 
-        //console.log(JSON.stringify(cooldown, undefined, 2))
-    }, DefaultOnRejected)
+    //console.log(JSON.stringify(cooldown, undefined, 2))
 
     await WaitForCooldown(cooldown)
 
@@ -645,6 +610,16 @@ global.DrawMap = (async function() {
         let array = gateData.data.connectedSystems as Array<any>
         MapRender.Render(array, "./X1-HN46-66989X-gatemap.png")
     }
+})
+
+global.agentList = (async function() {
+    let sortedList = SeenAgents.map((s) => { return { symbol: s.symbol, lastSeen: new Date(s.lastSeen) } })
+    let longestName = SeenAgents.reduce((s) => s.symbol.length)
+    sortedList.sort((x, y) => { return y.lastSeen.getTime() - x.lastSeen.getTime()})
+    for (let x = 0; x < sortedList.length; x++) {
+        console.log(`[${x.toString().padStart(3,' ')}] ${sortedList[x].symbol} ${sortedList[x].lastSeen}`)
+    }
+    //console.table(sortedList)
 })
 
 global.whoami = (async function() {
