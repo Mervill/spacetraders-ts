@@ -1,4 +1,5 @@
 import axios, { AxiosResponse } from 'axios'
+import * as _ from "lodash"
 import * as mongoDB from "mongodb"
 import * as dotenv from "dotenv"
 import * as Canvas from "canvas"
@@ -29,6 +30,7 @@ import {
   WaypointTraitSymbolEnum,
 } from './packages/spacetraders-sdk'
 import * as fs from 'fs'
+import { AgentRecord } from './src/types'
 
 // FLIGHT MODE
 // DRIFT, STEALTH, CRUISE, BURN
@@ -60,29 +62,30 @@ export const axoisInstance = axios.create({})
 
 // example retry logic for 429 rate-limit errors
 axoisInstance.interceptors.response.use(undefined, async (error) => {
-  const apiError = error.response?.data?.error
-
+    //const apiError = error.response?.data?.error
   if (error.response?.status === 429) {
-    
     const retryAfter = error.response.headers['retry-after']
-
     console.log(`GOT ERROR 429 rate-limit, retry after ${retryAfter}s`)
-
     await new Promise((resolve) => {
       setTimeout(resolve, retryAfter * 1000)
     })
-
     return axoisInstance.request(error.config)
   }
-
   throw error
+})
+
+axoisInstance.interceptors.response.use(undefined, async (error) => {
+    if (error.response?.status === 409 && error.response.data !== undefined) {
+        console.log(JSON.stringify(error.response.data, undefined, 2))
+    }
+    throw error
 })
 
 const system = new SystemsApi(configuration, undefined, axoisInstance)
 const agent = new AgentsApi(configuration, undefined, axoisInstance)
 const fleet = new FleetApi(configuration, undefined, axoisInstance)
 
-let SeenAgents = []
+let SeenAgents: AgentRecord[] = []
 
 async function mongoDBConnect() {
     // NOTE: mongodb connection keeps the prorgam alive?
@@ -331,12 +334,10 @@ async function ShipScanLoop(scannerShip: string) {
 
 async function StartShipScan(scannerShip: string, scanOrigin: string) {
 
-    let cooldown: Cooldown = undefined
-
     let shipScanResponse = await fleet.createShipShipScan(scannerShip)
     let ships = shipScanResponse.data.data.ships
     //let cooldown: Cooldown = value.data.data.cooldown
-    cooldown = shipScanResponse.data.data.cooldown
+    let cooldown = shipScanResponse.data.data.cooldown
     let now = new Date()
 
     let scanRecord = {
@@ -612,12 +613,12 @@ global.DrawMap = (async function() {
     }
 })
 
-global.agentList = (async function() {
-    let sortedList = SeenAgents.map((s) => { return { symbol: s.symbol, lastSeen: new Date(s.lastSeen) } })
-    let longestName = SeenAgents.reduce((s) => s.symbol.length)
+global.AgentList = (async function() {
+    let sortedList = SeenAgents.map((s) => { return { symbol: s.symbol, lastSeen: s.lastSeen } })
+    let longestName = _.maxBy(SeenAgents, (s) => s.symbol.length).symbol.length
     sortedList.sort((x, y) => { return y.lastSeen.getTime() - x.lastSeen.getTime()})
     for (let x = 0; x < sortedList.length; x++) {
-        console.log(`[${x.toString().padStart(3,' ')}] ${sortedList[x].symbol} ${sortedList[x].lastSeen}`)
+        console.log(`[${x.toString().padStart(3,' ')}] ${sortedList[x].symbol.padEnd(longestName, ' ')} ${sortedList[x].lastSeen}`)
     }
     //console.table(sortedList)
 })
@@ -630,5 +631,4 @@ global.whoami = (async function() {
     console.log(`[whoami] accountId: ${agentResponse.data.data.accountId}`)
 })
 
-global.DrawMap()
 main()
