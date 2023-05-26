@@ -2,6 +2,8 @@ import * as Canvas from 'canvas'
 import * as fs from 'fs'
 //import * as vr from 'voronoi'
 import { Voronoi, BoundingBox, Site, Diagram } from 'voronoijs'
+import { System, Waypoint } from '../packages/spacetraders-sdk'
+import { Vector } from 'ts-matrix'
 
 let factionColors = {
     "COSMIC"  : "#000099", // blue
@@ -165,4 +167,138 @@ export function Render(data: Array<any>, filename: string) {
     const out = fs.createWriteStream(filename)
     const stream = canvas.createPNGStream()
     stream.pipe(out)
+}
+
+export function DrawSystem(system: System, folderPath?: string, filename?: string) {
+
+    if (folderPath === undefined) {
+        folderPath = "./render/"
+    }
+
+    if (filename === undefined) {
+        filename = `System-${system.symbol}.png`
+    }
+
+    // TODO: file extension must be png
+
+    const fullPath: string = folderPath + filename
+
+    let minpoint = { x: 0, y: 0 }
+    let maxpoint = { x: 0, y: 0 }
+    for (let waypoint of system.waypoints) {
+        if (waypoint.x < minpoint.x) {
+            minpoint.x = waypoint.x
+        }
+        if (waypoint.y < minpoint.y) {
+            minpoint.y = waypoint.y
+        }
+
+        if (waypoint.x > maxpoint.x) {
+            maxpoint.x = waypoint.x
+        }
+        if (waypoint.y > maxpoint.y) {
+            maxpoint.y = waypoint.y
+        }
+    }
+    console.log(minpoint, maxpoint)
+
+    const scaleFactor = 10
+    const padding = 100
+    minpoint.x = (minpoint.x * scaleFactor) - padding
+    maxpoint.x = (maxpoint.x * scaleFactor) + padding
+    minpoint.y = (minpoint.y * scaleFactor) - padding
+    maxpoint.y = (maxpoint.y * scaleFactor) + padding
+
+    const halfCanvasWidth = Math.max(Math.abs(minpoint.x), maxpoint.x)
+    const halfCanvasHeight = Math.max(Math.abs(minpoint.y), maxpoint.y)
+    const canvasWidth = halfCanvasWidth * 2
+    const canvasHeight = halfCanvasHeight * 2
+
+    for (let waypoint of system.waypoints) {
+        waypoint.x = (waypoint.x * scaleFactor)
+        waypoint.y = (waypoint.y * scaleFactor)
+    }
+
+    const canvas = Canvas.createCanvas(canvasWidth, canvasHeight)
+    const ctx = canvas.getContext("2d")
+
+    // background color
+    {
+        ctx.fillStyle = '#CCCCCC'
+        ctx.fillRect(0, 0, canvasWidth, canvasHeight)
+    }
+
+    // center cross
+    {
+        ctx.lineWidth = 0
+        ctx.fillStyle = 'black'
+        ctx.fillRect(halfCanvasWidth, 0, 1, canvasHeight)
+        ctx.fillRect(0, halfCanvasHeight, canvasWidth, 1)
+    }
+
+    // star
+    {
+        const starRadius = 20
+        ctx.beginPath()
+        ctx.arc(halfCanvasWidth, halfCanvasHeight, starRadius, 0, 2 * Math.PI, false)
+        ctx.fillStyle = 'white'
+        ctx.fill()
+        ctx.lineWidth = 2
+        ctx.strokeStyle = 'black'
+        ctx.stroke()
+    }
+
+    console.log(`Drawing ${system.waypoints.length} waypoints...`)
+    for (const waypoint of system.waypoints) {
+        const origin: Vector = new Vector([ waypoint.x, waypoint.y ])
+
+        ctx.beginPath()
+        ctx.arc(halfCanvasWidth, halfCanvasHeight, origin.length(), 0, 2 * Math.PI, false)
+        ctx.setLineDash([10])
+        ctx.lineWidth = 2
+        ctx.strokeStyle = 'black'
+        ctx.stroke()
+
+        const radius = 10
+        ctx.beginPath()
+        ctx.arc(halfCanvasWidth + waypoint.x, halfCanvasHeight + waypoint.y, radius, 0, 2 * Math.PI, false)
+        ctx.fillStyle = 'white'
+        ctx.fill()
+        ctx.setLineDash([])
+        ctx.lineWidth = 2
+        ctx.strokeStyle = 'black'
+        ctx.stroke()
+    }
+
+    // title
+    {
+        const titleString: string = `${system.symbol} [${system.x}, ${system.y}]`
+
+        //ctx.font = '30px Impact'
+        ctx.font = '30px Mono'
+        const textMetrics = ctx.measureText(titleString)
+        const textHeight = textMetrics.actualBoundingBoxAscent + textMetrics.actualBoundingBoxDescent
+
+        ctx.fillStyle = 'white'
+        ctx.fillRect(0, 0, canvasWidth, textHeight + 20)
+
+        ctx.beginPath()
+        ctx.moveTo(0, textHeight + 20)
+        ctx.lineTo(canvasWidth, textHeight + 20)
+        ctx.lineWidth = 2
+        ctx.strokeStyle = 'black'
+        ctx.stroke()
+
+        ctx.fillStyle = 'black'
+        ctx.fillText(titleString, 10, textHeight + 10)
+    }
+
+    const out = fs.createWriteStream(fullPath)
+    const stream = canvas.createPNGStream()
+    stream.pipe(out)
+    console.log(`[DrawSystem] Wrote ${fullPath}`)
+}
+
+function VectorLength(x: number, y:number): number {
+    return Math.sqrt(Math.pow(x, 2) + Math.pow(y, 2))
 }

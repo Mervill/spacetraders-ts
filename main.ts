@@ -613,6 +613,11 @@ global.DrawMap = (async function() {
     }
 })
 
+global.DrawSystem = (async function(systemName: string) {
+    let systemData = await system.getSystem(systemName)
+    MapRender.DrawSystem(systemData.data.data)
+})
+
 global.AgentList = (async function() {
     let sortedList = SeenAgents.map((s) => { return { symbol: s.symbol, lastSeen: s.lastSeen } })
     let longestName = _.maxBy(SeenAgents, (s) => s.symbol.length).symbol.length

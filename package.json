@@ -4,17 +4,18 @@
   "description": "",
   "main": "index.js",
   "dependencies": {
-    "@types/lodash": "^4.14.194",
+    "@types/lodash": "^4.14.195",
     "axios": "^1.4.0",
     "bitset": "^5.1.1",
     "canvas": "^2.11.2",
     "dotenv": "^16.0.3",
     "lodash": "^4.17.21",
     "mongodb": "^5.5.0",
+    "ts-matrix": "^1.2.2",
     "voronoijs": "^1.0.0"
   },
   "devDependencies": {
-    "@types/node": "^20.1.1"
+    "@types/node": "^20.2.5"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
