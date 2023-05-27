@@ -2,7 +2,7 @@ import * as Canvas from 'canvas'
 import * as fs from 'fs'
 //import * as vr from 'voronoi'
 import { Voronoi, BoundingBox, Site, Diagram } from 'voronoijs'
-import { System, Waypoint } from '../packages/spacetraders-sdk'
+import { System, Waypoint, WaypointType } from '../packages/spacetraders-sdk'
 import { Vector } from 'ts-matrix'
 
 let factionColors = {
@@ -250,7 +250,7 @@ export function DrawSystem(system: System, folderPath?: string, filename?: strin
     }
 
     const canvas = Canvas.createCanvas(canvasWidth, canvasHeight)
-    const ctx = canvas.getContext("2d")
+    const ctx: Canvas.CanvasRenderingContext2D = canvas.getContext("2d")
 
     // background color
     {
@@ -268,7 +268,7 @@ export function DrawSystem(system: System, folderPath?: string, filename?: strin
 
     // star
     {
-        const starRadius = 20
+        const starRadius = 28
         ctx.beginPath()
         ctx.arc(halfCanvasWidth, halfCanvasHeight, starRadius, 0, 2 * Math.PI, false)
         ctx.fillStyle = starColors[system.type] ?? waypointDefaultFillColor
@@ -299,9 +299,10 @@ export function DrawSystem(system: System, folderPath?: string, filename?: strin
             ctx.lineWidth = 2
             ctx.strokeStyle = orbitLineColor
             ctx.stroke()
+            ctx.setLineDash([])
         }
 
-        const primaryWaypointRadius = 10
+        const primaryWaypointRadius = 15
         let radius = primaryWaypointRadius
         let positionX = waypoint.x
         let positionY = waypoint.y
@@ -323,14 +324,20 @@ export function DrawSystem(system: System, folderPath?: string, filename?: strin
             }
         }
 
-        ctx.beginPath()
-        ctx.arc(halfCanvasWidth + positionX, halfCanvasHeight + positionY, radius, 0, 2 * Math.PI, false)
-        ctx.fillStyle = waypointDefaultFillColor
-        ctx.fill()
-        ctx.setLineDash([])
-        ctx.lineWidth = 2
-        ctx.strokeStyle = waypointStrokeColor
-        ctx.stroke()
+        if (waypoint.type == WaypointType.JumpGate) {
+            //DrawTriangle(ctx, halfCanvasWidth + positionX, halfCanvasHeight + positionY)
+            DrawPolygon(ctx, 3, radius, halfCanvasWidth + positionX, halfCanvasHeight + positionY)
+        } else if (waypoint.type == WaypointType.OrbitalStation) {
+            DrawPolygon(ctx, 6, radius, halfCanvasWidth + positionX, halfCanvasHeight + positionY)
+        } else {
+            ctx.beginPath()
+            ctx.arc(halfCanvasWidth + positionX, halfCanvasHeight + positionY, radius, 0, 2 * Math.PI, false)
+            ctx.fillStyle = waypointDefaultFillColor
+            ctx.fill()
+            ctx.lineWidth = 2
+            ctx.strokeStyle = waypointStrokeColor
+            ctx.stroke()
+        }
     }
 
     // title
@@ -363,6 +370,50 @@ export function DrawSystem(system: System, folderPath?: string, filename?: strin
     console.log(`[DrawSystem] Wrote ${fullPath}`)
 }
 
+function DrawTriangle(ctx: Canvas.CanvasRenderingContext2D, centerX: number, centerY: number) {
+    //ctx.fillStyle = 'black'
+    //ctx.fillRect(centerX, centerY, centerX + 10, centerY + 10)
+
+    const radius = 10
+    let point1 = PointOnCircle(radius, 0)
+    let point2 = PointOnCircle(radius, 120)
+    let point3 = PointOnCircle(radius, 240)
+    ctx.beginPath()
+    ctx.moveTo(centerX + point1.x, centerY + point1.y)
+    ctx.lineTo(centerX + point2.x, centerY + point2.y)
+    ctx.lineTo(centerX + point3.x, centerY + point3.y)
+    ctx.closePath()
+    ctx.fillStyle = 'blue'
+    ctx.lineWidth = 2
+    ctx.strokeStyle = 'black'
+    ctx.fill()
+    ctx.stroke()
+}
+
+function DrawPolygon(ctx: Canvas.CanvasRenderingContext2D, sides: number, radius: number, centerX: number, centerY: number) {
+    ctx.beginPath()
+    for (let x: number = 0; x < 360; x += (360 / sides)) {
+        let p = PointOnCircle(radius, x)
+        if (x == 0) {
+            ctx.moveTo(centerX + p.x, centerY + p.y)
+        } else {
+            ctx.lineTo(centerX + p.x, centerY + p.y)
+        }
+    }
+    ctx.closePath()
+    ctx.fillStyle = 'blue'
+    ctx.lineWidth = 2
+    ctx.strokeStyle = 'black'
+    ctx.fill()
+    ctx.stroke()
+}
+
 function VectorLength(x: number, y:number): number {
     return Math.sqrt(Math.pow(x, 2) + Math.pow(y, 2))
+}
+
+function PointOnCircle(radius: number, deg: number) {
+    let x = Math.sin(deg * (Math.PI/180)) * radius
+    let y = Math.cos(deg * (Math.PI/180)) * radius
+    return { x: x, y: y }
 }

@@ -75,12 +75,13 @@ axoisInstance.interceptors.response.use(undefined, async (error) => {
 })
 
 axoisInstance.interceptors.response.use(undefined, async (error) => {
-    if (error.response?.status === 409 && error.response.data !== undefined) {
+    if ((error.response?.status === 409 || error.response?.status === 400) && error.response.data !== undefined) {
         console.log(JSON.stringify(error.response.data, undefined, 2))
     }
     throw error
 })
 
+const defaultApi = new DefaultApi(configuration, undefined, axoisInstance)
 const system = new SystemsApi(configuration, undefined, axoisInstance)
 const agent = new AgentsApi(configuration, undefined, axoisInstance)
 const fleet = new FleetApi(configuration, undefined, axoisInstance)
@@ -253,22 +254,22 @@ async function DoSellCargo(myShip: Ship, sellInfo: Object, logWhenNoneInInventor
         return
     }
 
-    let marketResponse = await system.getMarket(myShip.nav.systemSymbol, myShip.nav.waypointSymbol)
+    /*let marketResponse = await system.getMarket(myShip.nav.systemSymbol, myShip.nav.waypointSymbol)
     let tradeGoods = marketResponse.data.data.tradeGoods
 
     if (!tradeGoods) {
         console.log(`${logPrefix}: Can't sell, no trade goods`)
         return
-    }
+    }*/
 
     let runningTotal: number = 0
     let lastResponse: SellCargo201ResponseData = undefined
     for (const [cargoSymbol, requestSellQuantity] of Object.entries(sellInfo)) {
-        let tradeGoodEntry = tradeGoods.find((i) => i.symbol == cargoSymbol)
+        /*let tradeGoodEntry = tradeGoods.find((i) => i.symbol == cargoSymbol)
         if (!tradeGoodEntry) {
             console.log(`${logPrefix}: Can't sell ${cargoSymbol}, marketplate does not accept this!`)
             continue;
-        }
+        }*/
 
         const cargoRecord = myShip.cargo.inventory.find((i) => i.symbol == cargoSymbol)
         if (cargoRecord) {
@@ -674,16 +675,19 @@ global.spacetraders = (async function(extra: boolean = true) {
     let nextReset: Date = new Date(status.serverResets.next)
     let timeLefMS = nextReset.getTime() - now.getTime()
 
-    console.log("== spacetraders.io ==")
-    console.log(`${status.status}`)
-    console.log(`Next reset in ${msToHMS(timeLefMS)}`)
+    console.log("┌─────────────────┐")
+    console.log("├ spacetraders.io ┤")
+    console.log("└─────────────────┘")
+    console.log(`Α: ${status.status}`)
+    console.log(`Ω: Next reset in ${msToHMS(timeLefMS)}`)
 
     if (extra) {
-        console.log(`Leaderboard`)
         const mostCredits = status.leaderboards.mostCredits[0]
         const mostCharts = status.leaderboards.mostSubmittedCharts[0]
-        console.log(`├─ CREDITS: ${mostCredits.agentSymbol}, $${mostCredits.credits.toLocaleString()}`)
         const chartPercent = (mostCharts.chartCount * 100) / status.stats.waypoints
+        console.log(`Leaderboard │`)
+        console.log(`╒═══════════╛`)
+        console.log(`├─ CREDITS: ${mostCredits.agentSymbol}, $${mostCredits.credits.toLocaleString()}`)
         console.log(`├─ CHARTS : ${mostCharts.agentSymbol}, ${mostCharts.chartCount} Charts (%${ Math.round((chartPercent + Number.EPSILON) * 10000) / 10000 })`)
     }
     
