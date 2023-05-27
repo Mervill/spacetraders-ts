@@ -8,7 +8,7 @@ import * as utils from "./utils"
 import {
   Configuration,
   Cooldown,
-  //DefaultApi,
+  DefaultApi,
   FactionsApi,
   FleetApi,
   ContractsApi,
@@ -65,7 +65,7 @@ axoisInstance.interceptors.response.use(undefined, async (error) => {
     //const apiError = error.response?.data?.error
   if (error.response?.status === 429) {
     const retryAfter = error.response.headers['retry-after']
-    console.log(`GOT ERROR 429 rate-limit, retry after ${retryAfter}s`)
+        console.warn(`GOT ERROR 429 rate-limit, retry after ${retryAfter}s`)
     await new Promise((resolve) => {
       setTimeout(resolve, retryAfter * 1000)
     })
@@ -128,17 +128,35 @@ function CalcShipRouteTimeRemaining(route: ShipNavRoute) {
     return timeRemaining
 }
 
-function msToHMS(ms) {
-    // 1- Convert to seconds:
+/*function msToHMS(ms) {
+    // convert to seconds
     let seconds = Math.floor(ms / 1000);
-    // 2- Extract hours:
+
     const hours = Math.floor(seconds / 3600); // 3,600 seconds in 1 hour
     seconds = seconds % 3600; // seconds remaining after extracting hours
-    // 3- Extract minutes:
+
     const minutes = Math.floor(seconds / 60); // 60 seconds in 1 minute
-    // 4- Keep only seconds not extracted to minutes:
-    seconds = seconds % 60;
+    seconds = seconds % 60; // seconds remaining after extracting minutes
+
     return hours.toString().padStart(2,"0")+":"+minutes.toString().padStart(2,"0")+":"+seconds.toString().padStart(2,"0");
+}*/
+
+function msToHMS(ms: number) {
+    // convert to seconds
+    let seconds = Math.floor(ms / 1000);
+
+    const hours = Math.floor(seconds / 3600); // 3,600 seconds in 1 hour
+    seconds = seconds % 3600; // seconds remaining after extracting hours
+
+    const minutes = Math.floor(seconds / 60); // 60 seconds in 1 minute
+    seconds = seconds % 60; // seconds remaining after extracting minutes
+
+    const hrs: string = hours.toString().padStart(2,"0")
+    const mins: string = minutes.toString().padStart(2,"0")
+    const secs: string = seconds.toString().padStart(2,"0")
+    const msecs: string = (ms % 1000).toString().padStart(4, "0")
+
+    return `${hrs}:${mins}:${secs}.${msecs}`;
 }
 
 function WaitForMS(timeMS: number): Promise<never> {
@@ -482,6 +500,11 @@ async function ShipMineLoop(minerShipSymbol: string, sellWaypoint: string, mineW
         "DIAMONDS": -1,
     }, false)
 
+    if (myShip.cargo.units == myShip.cargo.capacity) {
+        console.log(`[ERROR] ${myShip.symbol} still full after attempted sell! bail out!`)
+        return
+    }
+
     ShipMineLoop(minerShipSymbol, sellWaypoint, mineWaypoint)
 }
 
@@ -628,12 +651,42 @@ global.AgentList = (async function() {
     //console.table(sortedList)
 })
 
-global.whoami = (async function() {
+global.GetMarket = (async function (systemSymbol: string, waypointSymbol: string, dump: boolean = true) {
+    let getMarketResponse = await system.getMarket(systemSymbol, waypointSymbol)
+    console.log(JSON.stringify(getMarketResponse.data.data, undefined, 2))
+})
+
+global.whoami = (async function(full: boolean = false) {
     let agentResponse = await agent.getMyAgent()
     console.log(`[whoami] ${agentResponse.data.data.symbol}`)
     console.log(`[whoami] Credits: ${agentResponse.data.data.credits.toLocaleString()}`)
     console.log(`[whoami] Headquarters: ${agentResponse.data.data.headquarters}`)
+    if (full) {
     console.log(`[whoami] accountId: ${agentResponse.data.data.accountId}`)
+    }
+})
+
+global.spacetraders = (async function(extra: boolean = true) {
+    let statusResponse = await defaultApi.getStatus()
+    let status = statusResponse.data
+    
+    let now: Date = new Date()
+    let nextReset: Date = new Date(status.serverResets.next)
+    let timeLefMS = nextReset.getTime() - now.getTime()
+
+    console.log("== spacetraders.io ==")
+    console.log(`${status.status}`)
+    console.log(`Next reset in ${msToHMS(timeLefMS)}`)
+
+    if (extra) {
+        console.log(`Leaderboard`)
+        const mostCredits = status.leaderboards.mostCredits[0]
+        const mostCharts = status.leaderboards.mostSubmittedCharts[0]
+        console.log(`├─ CREDITS: ${mostCredits.agentSymbol}, $${mostCredits.credits.toLocaleString()}`)
+        const chartPercent = (mostCharts.chartCount * 100) / status.stats.waypoints
+        console.log(`├─ CHARTS : ${mostCharts.agentSymbol}, ${mostCharts.chartCount} Charts (%${ Math.round((chartPercent + Number.EPSILON) * 10000) / 10000 })`)
+    }
+    
 })
 
 main()
