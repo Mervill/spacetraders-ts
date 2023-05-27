@@ -17,6 +17,31 @@ let factionColors = {
     "GALACTIC": "#990000",
 }
 
+let starColors = {
+    "NEUTRON_STAR": "#7DF9FF",
+    "RED_STAR"    : "#EE4B2B",
+    "ORANGE_STAR" : "#FFAC1C",
+    "BLUE_STAR"   : "#6495ED",
+    "YOUNG_STAR"  : "#FFEA00",
+    "WHITE_DWARF" : "#000000",
+    "BLACK_HOLE"  : "#191970",
+    "HYPERGIANT"  : "#C04000",
+    "NEBULA"      : "#5D3FD3",
+    "UNSTABLE"    : "#28282B",
+}
+
+let waypointColors = {
+    "PLANET"         : "",
+    "GAS_GIANT"      : "",
+    "MOON"           : "",
+    "ORBITAL_STATION": "",
+    "JUMP_GATE"      : "",
+    "ASTEROID_FIELD" : "",
+    "NEBULA"         : "",
+    "DEBRIS_FIELD"   : "",
+    "GRAVITY_WELL"   : "",
+}
+
 export function Render(data: Array<any>, filename: string) {
     
     console.log(`data: ${data.length}`)
@@ -171,6 +196,11 @@ export function Render(data: Array<any>, filename: string) {
 
 export function DrawSystem(system: System, folderPath?: string, filename?: string) {
 
+    const mainBGColor = '#6e6e6e'
+    const waypointDefaultFillColor = 'white'
+    const waypointStrokeColor = 'black'
+    const orbitLineColor = 'black'
+
     if (folderPath === undefined) {
         folderPath = "./render/"
     }
@@ -224,7 +254,7 @@ export function DrawSystem(system: System, folderPath?: string, filename?: strin
 
     // background color
     {
-        ctx.fillStyle = '#CCCCCC'
+        ctx.fillStyle = mainBGColor
         ctx.fillRect(0, 0, canvasWidth, canvasHeight)
     }
 
@@ -241,41 +271,75 @@ export function DrawSystem(system: System, folderPath?: string, filename?: strin
         const starRadius = 20
         ctx.beginPath()
         ctx.arc(halfCanvasWidth, halfCanvasHeight, starRadius, 0, 2 * Math.PI, false)
-        ctx.fillStyle = 'white'
+        ctx.fillStyle = starColors[system.type] ?? waypointDefaultFillColor
         ctx.fill()
         ctx.lineWidth = 2
-        ctx.strokeStyle = 'black'
+        ctx.strokeStyle = waypointStrokeColor
         ctx.stroke()
     }
 
     console.log(`Drawing ${system.waypoints.length} waypoints...`)
+    let orbitKeys = {}
     for (const waypoint of system.waypoints) {
-        const origin: Vector = new Vector([ waypoint.x, waypoint.y ])
+
+        let isSubObject = false
+        const ok = `${waypoint.x},${waypoint.y}`
+        if (orbitKeys[ok] === undefined) {
+            orbitKeys[ok] = 0
+        } else {
+            isSubObject = true
+            orbitKeys[ok]++
+        }
+
+        if (!isSubObject) {
+            const origin: Vector = new Vector([ waypoint.x, waypoint.y ])
+            ctx.beginPath()
+            ctx.arc(halfCanvasWidth, halfCanvasHeight, origin.length(), 0, 2 * Math.PI, false)
+            ctx.setLineDash([10])
+            ctx.lineWidth = 2
+            ctx.strokeStyle = orbitLineColor
+            ctx.stroke()
+        }
+
+        const primaryWaypointRadius = 10
+        let radius = primaryWaypointRadius
+        let positionX = waypoint.x
+        let positionY = waypoint.y
+
+        const subobjectPadding = 2
+        if (isSubObject) {
+            radius /= 2
+            let offset = 0
+            // this line deals with the seperation between the subobjects
+            offset += (((radius + subobjectPadding) * 2) * (orbitKeys[ok] - 1))
+            // this line deals with the offset from the primary object
+            offset += (primaryWaypointRadius + radius) + (subobjectPadding * 2)
+
+            // we want to draw subobjects 'towards' the center of the image
+            if ((positionX + halfCanvasWidth) > halfCanvasWidth) {
+                positionX -= offset
+            } else {
+                positionX += offset
+            }
+        }
 
         ctx.beginPath()
-        ctx.arc(halfCanvasWidth, halfCanvasHeight, origin.length(), 0, 2 * Math.PI, false)
-        ctx.setLineDash([10])
-        ctx.lineWidth = 2
-        ctx.strokeStyle = 'black'
-        ctx.stroke()
-
-        const radius = 10
-        ctx.beginPath()
-        ctx.arc(halfCanvasWidth + waypoint.x, halfCanvasHeight + waypoint.y, radius, 0, 2 * Math.PI, false)
-        ctx.fillStyle = 'white'
+        ctx.arc(halfCanvasWidth + positionX, halfCanvasHeight + positionY, radius, 0, 2 * Math.PI, false)
+        ctx.fillStyle = waypointDefaultFillColor
         ctx.fill()
         ctx.setLineDash([])
         ctx.lineWidth = 2
-        ctx.strokeStyle = 'black'
+        ctx.strokeStyle = waypointStrokeColor
         ctx.stroke()
     }
 
     // title
     {
-        const titleString: string = `${system.symbol} [${system.x}, ${system.y}]`
+        const titleString: string = `${system.symbol} [${system.x} ${system.y}]`
 
         //ctx.font = '30px Impact'
-        ctx.font = '30px Mono'
+        //ctx.font = '30px Mono'
+        ctx.font = '30px Cascade Mono'
         const textMetrics = ctx.measureText(titleString)
         const textHeight = textMetrics.actualBoundingBoxAscent + textMetrics.actualBoundingBoxDescent
 
