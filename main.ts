@@ -1,19 +1,10 @@
-import axios, { AxiosResponse } from 'axios'
+import axios from 'axios'
 import * as _ from "lodash"
-import * as mongoDB from "mongodb"
 import * as dotenv from "dotenv"
-import * as Canvas from "canvas"
 import * as MapRender from "./src/MapRenderer"
 import * as utils from "./utils"
 import {
-  Configuration,
   Cooldown,
-  DefaultApi,
-  FactionsApi,
-  FleetApi,
-  ContractsApi,
-  SystemsApi,
-  AgentsApi,
   ShipNav,
   ShipNavRoute,
   Ship,
@@ -28,9 +19,13 @@ import {
   SellCargo201ResponseData,
   Waypoint,
   WaypointTraitSymbolEnum,
+  WaypointType,
+  System,
 } from './packages/spacetraders-sdk'
 import * as fs from 'fs'
 import { AgentRecord } from './src/types'
+import { STContext } from './src/STContext'
+import { TaskManager } from './src/TaskManager'
 
 // FLIGHT MODE
 // DRIFT, STEALTH, CRUISE, BURN
@@ -40,77 +35,41 @@ import { AgentRecord } from './src/types'
 // IN_TRANSIT, IN_ORBIT, DOCKED
 // TR          OR        DO
 
-//console.log(JSON.stringify(SplitLocationSymbol("X1-DF55-17335A")))
-//console.log(JSON.stringify(SplitLocationSymbol("X1-DF55")))
-//console.log(JSON.stringify(SplitLocationSymbol("X1")))
-
 dotenv.config();
 
-export const mongoClient: mongoDB.MongoClient = new mongoDB.MongoClient(process.env.DB_CONN_STRING)
-export const dbCollections: { 
-    Agent?: mongoDB.Collection
-    ShipScan?: mongoDB.Collection
-    Waypoint?: mongoDB.Collection
-} = { }
+const axoisInstance = axios.create({})
 
-export const configuration = new Configuration({
-  basePath: process.env.BASE_PATH,
-  accessToken: process.env.SPACETRADERS_TOKEN
-})
-
-export const axoisInstance = axios.create({})
+//axoisInstance.interceptors.request.
 
 // example retry logic for 429 rate-limit errors
 axoisInstance.interceptors.response.use(undefined, async (error) => {
     //const apiError = error.response?.data?.error
-  if (error.response?.status === 429) {
-    const retryAfter = error.response.headers['retry-after']
+    if (error.response?.status === 429) {
+        const retryAfter = error.response.headers['retry-after']
         console.warn(`GOT ERROR 429 rate-limit, retry after ${retryAfter}s`)
-    await new Promise((resolve) => {
-      setTimeout(resolve, retryAfter * 1000)
-    })
-    return axoisInstance.request(error.config)
-  }
-  throw error
-})
-
-axoisInstance.interceptors.response.use(undefined, async (error) => {
-    if ((error.response?.status === 409 || error.response?.status === 400) && error.response.data !== undefined) {
-        console.log(JSON.stringify(error.response.data, undefined, 2))
+        await new Promise((resolve) => {
+            setTimeout(resolve, (retryAfter * 1000) + (Math.random() * 1000))
+        })
+        return axoisInstance.request(error.config)
     }
     throw error
 })
 
-const defaultApi = new DefaultApi(configuration, undefined, axoisInstance)
-const system = new SystemsApi(configuration, undefined, axoisInstance)
-const agent = new AgentsApi(configuration, undefined, axoisInstance)
-const fleet = new FleetApi(configuration, undefined, axoisInstance)
+axoisInstance.interceptors.response.use(undefined, async (error) => {
+    if ((error.response?.status === 409 || error.response?.status === 400 || error.response?.status === 422) && error.response.data !== undefined) {
+        console.error(error.request.path)
+        console.error(JSON.stringify(error.response.data, undefined, 2))
+    }
+    throw error
+})
+
+let context: STContext = new STContext(axoisInstance)
 
 let SeenAgents: AgentRecord[] = []
-
-async function mongoDBConnect() {
-    // NOTE: mongodb connection keeps the prorgam alive?
-    await mongoClient.connect()
-    const db: mongoDB.Db = mongoClient.db(process.env.DB_NAME)
-    const shipScanCollection: mongoDB.Collection = db.collection("ShipScan")
-    const agentCollection: mongoDB.Collection = db.collection("Agent")
-    const waypointCollection: mongoDB.Collection = db.collection("Waypoint")
-    dbCollections.ShipScan = shipScanCollection
-    dbCollections.Agent = agentCollection
-    dbCollections.Waypoint = waypointCollection
-    console.log(`Successfully connected to database: ${db.databaseName}`)
-}
 
 function DefaultOnRejected(reason: any) {
     console.log("!!!!! REQUEST REJECTED !!!!!")
     console.log(JSON.stringify(reason, undefined, 2))
-}
-
-function SplitShipSymbol(shipSymbol: string) {
-    let seperatorPosition = shipSymbol.lastIndexOf("-")
-    let agentName = shipSymbol.substring(0, seperatorPosition)
-    let shipNumber = shipSymbol.substring(seperatorPosition + 1)
-    return { AgentName: agentName, ShipNumber: shipNumber }
 }
 
 function SplitLocationSymbol(rawLocation: string) {
@@ -121,7 +80,7 @@ function SplitLocationSymbol(rawLocation: string) {
     return { Sector: sectorPart, System: systemPart, Waypoint: waypointPart }
 }
 
-function CalcShipRouteTimeRemaining(route: ShipNavRoute) {
+function CalcShipRouteTimeRemaining(route: ShipNavRoute): number {
     let nowDate = new Date()
     let depatureDate = new Date(route.departureTime)
     let arrivalDate = new Date(route.arrival)
@@ -129,20 +88,9 @@ function CalcShipRouteTimeRemaining(route: ShipNavRoute) {
     return timeRemaining
 }
 
-/*function msToHMS(ms) {
-    // convert to seconds
-    let seconds = Math.floor(ms / 1000);
-
-    const hours = Math.floor(seconds / 3600); // 3,600 seconds in 1 hour
-    seconds = seconds % 3600; // seconds remaining after extracting hours
-
-    const minutes = Math.floor(seconds / 60); // 60 seconds in 1 minute
-    seconds = seconds % 60; // seconds remaining after extracting minutes
-
-    return hours.toString().padStart(2,"0")+":"+minutes.toString().padStart(2,"0")+":"+seconds.toString().padStart(2,"0");
-}*/
-
-function msToHMS(ms: number) {
+// MillisecondsToDuration
+// MillisecToDuration
+function msToHMS(ms: number): string {
     // convert to seconds
     let seconds = Math.floor(ms / 1000);
 
@@ -158,6 +106,27 @@ function msToHMS(ms: number) {
     const msecs: string = (ms % 1000).toString().padStart(4, "0")
 
     return `${hrs}:${mins}:${secs}.${msecs}`;
+}
+
+function msToDHMS(ms: number): string {
+    // convert to seconds
+    let seconds = Math.floor(ms / 1000);
+
+    const days = Math.floor(seconds / 86400)
+    seconds = seconds % 86400
+
+    const hours = Math.floor(seconds / 3600); // 3,600 seconds in 1 hour
+    seconds = seconds % 3600; // seconds remaining after extracting hours
+
+    const minutes = Math.floor(seconds / 60); // 60 seconds in 1 minute
+    seconds = seconds % 60; // seconds remaining after extracting minutes
+
+    const hrs: string = hours.toString().padStart(2,"0")
+    const mins: string = minutes.toString().padStart(2,"0")
+    const secs: string = seconds.toString().padStart(2,"0")
+    const msecs: string = (ms % 1000).toString().padStart(4, "0")
+
+    return `${days}:${hrs}:${mins}:${secs}.${msecs}`;
 }
 
 function WaitForMS(timeMS: number): Promise<never> {
@@ -184,7 +153,7 @@ async function WaitForCooldown(cooldown: Cooldown, log: boolean = true) {
 async function WaitForShipIdle(shipSymbol: string) {
     console.log(`${shipSymbol}/waitIdle: Waiting until ship is idle`)
 
-    let navigationResponse = await fleet.getShipNav(shipSymbol)
+    let navigationResponse = await context.fleetApi.getShipNav(shipSymbol)
     let nav: ShipNav = navigationResponse.data.data
     if (nav.status == ShipNavStatus.InTransit) {
         let now = new Date()
@@ -192,7 +161,7 @@ async function WaitForShipIdle(shipSymbol: string) {
         console.log(`${shipSymbol}/waitIdle: Waiting on transit, complete in ${msToHMS(waitfor)}`)
         await WaitForMS(waitfor)
     } else {
-        let cooldownResponse = await fleet.getShipCooldown(shipSymbol)
+        let cooldownResponse = await context.fleetApi.getShipCooldown(shipSymbol)
         if (cooldownResponse.status == 200) {
             let cooldown: Cooldown = cooldownResponse.data.data
             await WaitForCooldown(cooldown)
@@ -229,7 +198,7 @@ async function DoNavigateTo(myShip: Ship, destinationWaypoint: string) {
     }
 
     let navigateRequest: NavigateShipRequest = { waypointSymbol: destinationWaypoint }
-    let navigateResponse = await fleet.navigateShip(myShip.symbol, navigateRequest);
+    let navigateResponse = await context.fleetApi.navigateShip(myShip.symbol, navigateRequest);
 
     myShip.fuel = navigateResponse.data.data.fuel
     myShip.nav = navigateResponse.data.data.nav
@@ -282,7 +251,7 @@ async function DoSellCargo(myShip: Ship, sellInfo: Object, logWhenNoneInInventor
                 units: sellQuantity
             }
             console.log(`${logPrefix}: Try selling ${cargoSymbol} x${sellQuantity}...`)
-            let sellResponse = await fleet.sellCargo(myShip.symbol, request)
+            let sellResponse = await context.fleetApi.sellCargo(myShip.symbol, request)
             let transaction: MarketTransaction = sellResponse.data.data.transaction
             console.log(`${logPrefix}: ${transaction.tradeSymbol} x${transaction.units}($${transaction.pricePerUnit}/ea) +$${transaction.totalPrice}`)
             //console.log(JSON.stringify(sellResponse.data.data, undefined, 2))
@@ -345,15 +314,16 @@ async function main() {
 // ==========
 // SCAN LOOP
 
-async function ShipScanLoop(scannerShip: string) {
-    let orbitResponse = await fleet.orbitShip(scannerShip)
+//async function ShipScanLoop(scannerShip: string) {
+async function* ShipScanLoop(ships: Ship[], payload: void) {
+    let orbitResponse = await context.fleetApi.orbitShip(ships[0].symbol)
     let scanOrigin: string = orbitResponse.data.data.nav.waypointSymbol
-    await StartShipScan(scannerShip, scanOrigin)
+    await StartShipScan(ships[0].symbol, scanOrigin)
 }
 
 async function StartShipScan(scannerShip: string, scanOrigin: string) {
 
-    let shipScanResponse = await fleet.createShipShipScan(scannerShip)
+    let shipScanResponse = await context.fleetApi.createShipShipScan(scannerShip)
     let ships = shipScanResponse.data.data.ships
     //let cooldown: Cooldown = value.data.data.cooldown
     let cooldown = shipScanResponse.data.data.cooldown
@@ -368,7 +338,7 @@ async function StartShipScan(scannerShip: string, scanOrigin: string) {
         scanData: ships
     }
     
-    dbCollections.ShipScan.insertOne(scanRecord)
+    context.dbCollections.ShipScan.insertOne(scanRecord)
 
     let newAgents = []
     let tabledata = {}
@@ -379,9 +349,9 @@ async function StartShipScan(scannerShip: string, scanOrigin: string) {
     for (let x: number = 0; x < ships.length; x++) {
         const ship: ScannedShip = ships[x]
         
-        let agentName = SplitShipSymbol(ship.symbol).AgentName
+        let agentName = utils.SplitShipSymbol(ship.symbol).AgentName
 
-        const agentRecord = await dbCollections.Agent.findOne({
+        const agentRecord = await context.dbCollections.Agent.findOne({
             symbol: agentName
         })
 
@@ -391,11 +361,11 @@ async function StartShipScan(scannerShip: string, scanOrigin: string) {
                 firstSeen: now,
                 lastSeen: now
             }
-            await dbCollections.Agent.insertOne(newRecord)
+            await context.dbCollections.Agent.insertOne(newRecord)
             SeenAgents.push(newRecord)
             newAgents.push(agentName)
         } else {
-            await dbCollections.Agent.updateOne(
+            await context.dbCollections.Agent.updateOne(
                 { _id: agentRecord._id }, 
                 { $set: { lastSeen: now }})
             SeenAgents.find(s => s.symbol == agentRecord.symbol).lastSeen = now
@@ -417,7 +387,7 @@ async function StartShipScan(scannerShip: string, scanOrigin: string) {
         }
     }
     
-    console.log("[%s] %s: Preformed Ship Scan, %d Contacts", now.toISOString(), scannerShip, ships.length)
+    console.log("[%s] %s: Preformed Ship Scan, %d Contacts at %s", now.toISOString(), scannerShip, ships.length, scanOrigin)
     console.table(tabledata)
     
     if (newAgents.length != 0) {
@@ -437,147 +407,90 @@ async function StartShipScan(scannerShip: string, scanOrigin: string) {
 // ==========
 // MINE LOOP
 
-async function ShipMineLoop(minerShipSymbol: string, sellWaypoint: string, mineWaypoint: string) {
+//async function* ShipMineLoop(minerShipSymbol: string, sellWaypoint: string, mineWaypoint: string) {
+async function* ShipMineLoop(ships: Ship[], payload: { sellWaypoint: string, mineWaypoint: string }) {
+    //let minerShipSymbol = ships[0].symbol
+    let sellWaypoint = payload.sellWaypoint
+    let mineWaypoint = payload.mineWaypoint
+    let myShip = ships[0]
+    do {
+        
+        //let myShipResponse = await context.fleetApi.getMyShip(minerShipSymbol)
+        //let myShip: Ship = myShipResponse.data.data
 
-    let myShipResponse = await fleet.getMyShip(minerShipSymbol)
-    let myShip: Ship = myShipResponse.data.data
-
-    // if we're docked, go to orbit
-    if (myShip.nav.status == ShipNavStatus.Docked) {
-        let orbitShipReponse = await fleet.orbitShip(myShip.symbol)
-        myShip.nav = orbitShipReponse.data.data.nav
-    }
-    console.log(`${myShip.symbol}/extract: orbiting ${myShip.nav.waypointSymbol}`)
-
-    if (myShip.nav.waypointSymbol != mineWaypoint) {
-        await DoNavigateTo(myShip, mineWaypoint)
-    }
-
-    if (myShip.cargo.units < myShip.cargo.capacity) {
-        do {
-            let extractResponse = await fleet.extractResources(minerShipSymbol)
-            
-            let cooldown: Cooldown = extractResponse.data.data.cooldown
-            let extracted: Extraction = extractResponse.data.data.extraction
-            myShip.cargo = extractResponse.data.data.cargo
-
-            //console.log(JSON.stringify(extractResponse.data.data.extraction, undefined, 2))
-            //console.log(JSON.stringify(extractResponse.data.data.cargo, undefined, 2))
-            console.log(`${extracted.shipSymbol}/extract: extracted resources: ${extracted.yield.symbol} x${extracted.yield.units}`)
-            console.log(`${extracted.shipSymbol}/extract: cargo: ${myShip.cargo.units}/${myShip.cargo.capacity}`)
-
-            await WaitForCooldown(cooldown)
-        } while (myShip.cargo.units < myShip.cargo.capacity)
-    } else {
-        console.log(`${myShip.symbol}/extract: Not extracting resources, cargo full`)
-    }
-
-    if (myShip.nav.waypointSymbol != sellWaypoint) {
-        await DoNavigateTo(myShip, sellWaypoint)
-    }
-
-    if (myShip.nav.status == ShipNavStatus.InOrbit) {
-        let dockShipRequest = await fleet.dockShip(myShip.symbol)
-        myShip.nav = dockShipRequest.data.data.nav
-    }
-    console.log(`${myShip.symbol}: docked at ${myShip.nav.waypointSymbol}`)
-
-    // test for market?
-
-    PrintCargo(myShip.cargo)
-
-    //PRECIOUS_STONES
-    await DoSellCargo(myShip, { 
-        "IRON_ORE": -1,
-        "COPPER_ORE": -1,
-        "ALUMINUM_ORE": -1,
-        "SILVER_ORE": -1,
-        "GOLD_ORE": -1,
-        "PLATINUM_ORE": -1,
-        "SILICON_CRYSTALS": -1,
-        "ICE_WATER": -1,
-        "QUARTZ_SAND": -1,
-        "AMMONIA_ICE": -1,
-        "DIAMONDS": -1,
-    }, false)
-
-    if (myShip.cargo.units == myShip.cargo.capacity) {
-        console.log(`[ERROR] ${myShip.symbol} still full after attempted sell! bail out!`)
-        return
-    }
-
-    ShipMineLoop(minerShipSymbol, sellWaypoint, mineWaypoint)
-}
-
-global.GetShips = (async function (dump: boolean = false) {
-    let getMyShipsResponse = await fleet.getMyShips()
-    PrintShipTable(getMyShipsResponse.data.data)
-    if (dump) {
-        console.log(JSON.stringify(getMyShipsResponse.data.data, undefined, 2))
-    }
-})
-
-global.ShipTrySellCargo = (async function (shipSymbol: string, sellInfo: object) {
-    let myShipResponse = await fleet.getMyShip(shipSymbol)
-    let myShip: Ship = myShipResponse.data.data
-    DoSellCargo(myShip, sellInfo)
-})
-
-global.ShipPrintCargo = (async function (shipSymbol: string) {
-    let cargoResponse = await fleet.getMyShipCargo(shipSymbol)
-    console.log(`${shipSymbol}: CARGO [${cargoResponse.data.data.units}/${cargoResponse.data.data.capacity}]`)
-    PrintCargo(cargoResponse.data.data)
-})
-
-global.ShipTryDock = (async function (shipSymbol: string) {
-    let dockShipResponse = await fleet.dockShip(shipSymbol)
-    let nav: ShipNav = dockShipResponse.data.data.nav
-    console.log(`${shipSymbol}/ShipTryDock: docked at ${nav.waypointSymbol}`)
-})
-
-global.ShipTryOrbit = (async function (shipSymbol: string) {
-    let orbitShipRequest = await fleet.orbitShip(shipSymbol)
-    let nav: ShipNav = orbitShipRequest.data.data.nav
-    console.log(`${shipSymbol}/ShipTryOrbit: entered orbit around ${nav.waypointSymbol}`)
-})
-
-global.ShipManualNavigateTo = (async function (shipSymbol: string, waypointSymbol: string) {
-    let myShipResponse = await fleet.getMyShip(shipSymbol)
-    let myShip: Ship = myShipResponse.data.data
-    await DoNavigateTo(myShip, waypointSymbol)
-})
-
-async function GetWaypointRecord(systemSymbol: string, waypointSymbol: string, forceAPI: boolean = false) {
-    
-    let waypointRecord = undefined
-
-    let dbWaypointRecord = await dbCollections.Waypoint.findOne({
-        "data.systemSymbol": systemSymbol,
-        "data.symbol": waypointSymbol,
-    })
-    
-    if ((!dbWaypointRecord) || (forceAPI)) {
-        let getWaypointResponse = await system.getWaypoint(systemSymbol, waypointSymbol)
-        if (!dbWaypointRecord) {
-            waypointRecord = {
-                firstRetrieved: new Date(),
-                lastRetrieved: new Date(),
-                data: getWaypointResponse.data.data,
-            }
-            await dbCollections.Waypoint.insertOne(waypointRecord)
-        } else {
-            dbWaypointRecord.lastRetrieved = new Date()
-            dbWaypointRecord.data = getWaypointResponse.data.data    
-            await dbCollections.Waypoint.updateOne(
-                { _id: dbWaypointRecord._id },
-                { $set: dbWaypointRecord })
-            waypointRecord = dbWaypointRecord
+        // if we're docked, go to orbit
+        if (myShip.nav.status == ShipNavStatus.Docked) {
+            let orbitShipReponse = await context.fleetApi.orbitShip(myShip.symbol)
+            myShip.nav = orbitShipReponse.data.data.nav
         }
-    } else {
-        waypointRecord = dbWaypointRecord
-    }
+        console.log(`${myShip.symbol}/extract: orbiting ${myShip.nav.waypointSymbol}`)
 
-    return waypointRecord
+        yield
+
+        if (myShip.nav.waypointSymbol != mineWaypoint) {
+            await DoNavigateTo(myShip, mineWaypoint)
+            yield
+        }
+
+        if (myShip.cargo.units < myShip.cargo.capacity) {
+            do {
+                let extractResponse = await context.fleetApi.extractResources(myShip.symbol)
+                
+                let cooldown: Cooldown = extractResponse.data.data.cooldown
+                let extracted: Extraction = extractResponse.data.data.extraction
+                myShip.cargo = extractResponse.data.data.cargo
+
+                //console.log(JSON.stringify(extractResponse.data.data.extraction, undefined, 2))
+                //console.log(JSON.stringify(extractResponse.data.data.cargo, undefined, 2))
+                console.log(`${extracted.shipSymbol}/extract: extracted resources: ${extracted.yield.symbol} x${extracted.yield.units}`)
+                console.log(`${extracted.shipSymbol}/extract: cargo: ${myShip.cargo.units}/${myShip.cargo.capacity}`)
+
+                await WaitForCooldown(cooldown)
+                yield
+            } while (myShip.cargo.units < myShip.cargo.capacity)
+        } else {
+            console.log(`${myShip.symbol}/extract: Not extracting resources, cargo full`)
+        }
+
+        yield
+
+        if (myShip.nav.waypointSymbol != sellWaypoint) {
+            await DoNavigateTo(myShip, sellWaypoint)
+            yield
+        }
+
+        if (myShip.nav.status == ShipNavStatus.InOrbit) {
+            let dockShipRequest = await context.fleetApi.dockShip(myShip.symbol)
+            myShip.nav = dockShipRequest.data.data.nav
+            yield
+        }
+        console.log(`${myShip.symbol}: docked at ${myShip.nav.waypointSymbol}`)
+
+        // test for market?
+
+        PrintCargo(myShip.cargo)
+
+        //PRECIOUS_STONES
+        await DoSellCargo(myShip, { 
+            "IRON_ORE": -1,
+            "COPPER_ORE": -1,
+            "ALUMINUM_ORE": -1,
+            "SILVER_ORE": -1,
+            "GOLD_ORE": -1,
+            "PLATINUM_ORE": -1,
+            "SILICON_CRYSTALS": -1,
+            "ICE_WATER": -1,
+            "QUARTZ_SAND": -1,
+            "AMMONIA_ICE": -1,
+            "DIAMONDS": -1,
+        }, false)
+
+        if (myShip.cargo.units == myShip.cargo.capacity) {
+            console.log(`[ERROR] ${myShip.symbol} still full after attempted sell! bail out!`)
+            return
+        }
+
+    } while (true)
 }
 
 function PrintWaypoints(wapoints: Array<Waypoint>) {
@@ -585,7 +498,7 @@ function PrintWaypoints(wapoints: Array<Waypoint>) {
     wapoints.forEach(wp => {
         let wpEntry = {
             ["Type"]: wp.type,
-            ["Faction"]: wp.faction.symbol,
+            ["Faction"]: wp.faction?.symbol,
         }
 
         let market = wp.traits.find((s) => s.symbol == WaypointTraitSymbolEnum.Marketplace)
@@ -603,25 +516,145 @@ function PrintWaypoints(wapoints: Array<Waypoint>) {
     console.table(tabledata)
 }
 
+global.GetShips = (async function (dump: boolean = false) {
+    let getMyShipsResponse = await context.fleetApi.getMyShips()
+    PrintShipTable(getMyShipsResponse.data.data)
+    if (dump) {
+        console.log(JSON.stringify(getMyShipsResponse.data.data, undefined, 2))
+    }
+})
+
+global.ShipTrySellCargo = (async function (shipSymbol: string, sellInfo: object) {
+    let myShipResponse = await context.fleetApi.getMyShip(shipSymbol)
+    let myShip: Ship = myShipResponse.data.data
+    DoSellCargo(myShip, sellInfo)
+})
+
+global.ShipPrintCargo = (async function (shipSymbol: string) {
+    let cargoResponse = await context.fleetApi.getMyShipCargo(shipSymbol)
+    console.log(`${shipSymbol}: CARGO [${cargoResponse.data.data.units}/${cargoResponse.data.data.capacity}]`)
+    PrintCargo(cargoResponse.data.data)
+})
+
+global.ShipTryDock = (async function (shipSymbol: string) {
+    let dockShipResponse = await context.fleetApi.dockShip(shipSymbol)
+    let nav: ShipNav = dockShipResponse.data.data.nav
+    console.log(`${shipSymbol}/ShipTryDock: docked at ${nav.waypointSymbol}`)
+})
+
+global.ShipTryOrbit = (async function (shipSymbol: string) {
+    let orbitShipRequest = await context.fleetApi.orbitShip(shipSymbol)
+    let nav: ShipNav = orbitShipRequest.data.data.nav
+    console.log(`${shipSymbol}/ShipTryOrbit: entered orbit around ${nav.waypointSymbol}`)
+})
+
+global.ShipRefuel = (async function (shipSymbol: string) {
+    const allSystems = context.fleetApi.refuelShip(shipSymbol)
+
+})
+
+global.ShipManualNavigateTo = (async function (shipSymbol: string, waypointSymbol: string) {
+    let myShipResponse = await context.fleetApi.getMyShip(shipSymbol)
+    let myShip: Ship = myShipResponse.data.data
+    await DoNavigateTo(myShip, waypointSymbol)
+    console.log(`${myShip.symbol} completed manual navigation to ${waypointSymbol}`)
+})
+
+global.IndexJumpGateDestinations = async function (systemSymbol: string, waypointSymbol: string) {
+    let totalIndexes = 0
+    let gateQueue: { systemSymbol: string, waypointSymbol: string }[] = []
+    let seen: string[] = []
+
+    gateQueue.push({ systemSymbol: systemSymbol, waypointSymbol: waypointSymbol })
+
+    do {
+        let gate = gateQueue.pop()
+        seen.push(gate.systemSymbol)
+
+        let jumpGateInfo = await context.systemApi.getJumpGate(gate.systemSymbol, gate.waypointSymbol)
+        for (const dest of jumpGateInfo.data.data.connectedSystems) {
+            if ((seen.indexOf(dest.symbol) == -1) && gateQueue.findIndex((x) => x.systemSymbol == dest.symbol) == -1) {
+                totalIndexes++
+                console.log(`indexing ... ${dest.symbol} (${totalIndexes})`)
+                let systemRecord = await context.GetSystemRecord(dest.symbol)
+                let records = await context.GetAllSystemWaypoints(dest.symbol)
+                for (let entry of records) {
+                    if (entry.type == WaypointType.JumpGate) {
+                        if ((seen.indexOf(entry.systemSymbol) == -1) && gateQueue.findIndex((x) => x.systemSymbol == dest.symbol) == -1) {
+                            gateQueue.push({ systemSymbol: entry.systemSymbol, waypointSymbol: entry.symbol })
+                        }
+                    }
+                }
+                await WaitForMS(4000)
+            }
+        }
+        
+    } while (gateQueue.length != 0)
+    console.log(`done indexing`)
+}
+
+global.DownloadAllSystems = async function (page: number, limit: number) {
+    let entrycount = 0
+    let exit = false
+    do {
+        let getSystemsResult = await context.systemApi.getSystems(page, limit)
+
+        const data = getSystemsResult.data.data
+        const meta = getSystemsResult.data.meta
+
+        for (let sys of data) {
+            let dbSystemRecord = await context.dbCollections.System.findOne({
+                "data.symbol": sys.symbol
+            })
+
+            if (!dbSystemRecord) {
+                let systemRecord = {
+                    firstRetrieved: new Date(),
+                    lastRetrieved: new Date(),
+                    data: sys,
+                }
+                await context.dbCollections.System.insertOne(systemRecord)
+            } else {
+                dbSystemRecord.lastRetrieved = new Date()
+                dbSystemRecord.data = sys
+                await context.dbCollections.System.updateOne(
+                    { _id: dbSystemRecord._id },
+                    { $set: dbSystemRecord })
+            }
+
+            entrycount++
+        }
+
+        console.log(`DownloadAllSystems finished page ${page} | Indexed ${entrycount} systems`)
+
+        await WaitForMS(5000)
+
+        exit = !(page <= Math.ceil(meta.total / limit))
+        page += 1
+
+    } while(!exit)
+    console.log(`DownloadAllSystems Finished`)
+}
+
 global.GetWaypointRecord = async function (systemSymbol: string, waypointSymbol: string, forceAPI: boolean = false) {
-    let record = await GetWaypointRecord(systemSymbol, waypointSymbol, forceAPI)
+    let record = await context.GetWaypointRecord(systemSymbol, waypointSymbol, forceAPI)
     PrintWaypoints([ (record as any).data ])
     //console.log(JSON.stringify(record, undefined, 2))
 }
 
 global.GetAllSystemWaypoints = async function (systemSymbol: string, forceAPI: boolean = false) {
-    let getSystemResponse = await system.getSystem(systemSymbol)
-    let records: Array<Waypoint> = []
-    for (let wp of getSystemResponse.data.data.waypoints) {
-        let record = await GetWaypointRecord(systemSymbol, wp.symbol, forceAPI)
-        records.push(record.data)
-    }
+    let records = await context.GetAllSystemWaypoints(systemSymbol, forceAPI)
     PrintWaypoints(records)
 }
 
-// https://stackoverflow.com/questions/33599688/how-to-use-es8-async-await-with-streams
-global.DrawMap = (async function() {
-    {
+global.DrawMap = (async function () {
+    let systemList: System[] = []
+    let allSystems = context.dbCollections.System.find({})
+    for await (const system of allSystems){
+        systemList.push(system.data as System)
+    }
+    MapRender.DrawGalaxy(systemList, "./render/")
+    /*{
         const jsonText: string = fs.readFileSync("./X1-ZA40-28549E.json", "utf-8")
         
         let gateData = JSON.parse(jsonText)
@@ -634,15 +667,16 @@ global.DrawMap = (async function() {
         let gateData = JSON.parse(jsonText)
         let array = gateData.data.connectedSystems as Array<any>
         MapRender.Render(array, "./X1-HN46-66989X-gatemap.png")
-    }
+    }*/
 })
 
-global.DrawSystem = (async function(systemName: string) {
-    let systemData = await system.getSystem(systemName)
-    MapRender.DrawSystem(systemData.data.data)
+global.DrawSystem = (async function (systemName: string) {
+    //let systemData = await context.systemApi.getSystem(systemName)
+    let systemData = await context.GetSystemRecord(systemName)
+    MapRender.DrawSystem(systemData.data)
 })
 
-global.AgentList = (async function() {
+global.AgentList = (async function () {
     let sortedList = SeenAgents.map((s) => { return { symbol: s.symbol, lastSeen: s.lastSeen } })
     let longestName = _.maxBy(SeenAgents, (s) => s.symbol.length).symbol.length
     sortedList.sort((x, y) => { return y.lastSeen.getTime() - x.lastSeen.getTime()})
@@ -653,24 +687,34 @@ global.AgentList = (async function() {
 })
 
 global.GetMarket = (async function (systemSymbol: string, waypointSymbol: string, dump: boolean = true) {
-    let getMarketResponse = await system.getMarket(systemSymbol, waypointSymbol)
+    let getMarketResponse = await context.systemApi.getMarket(systemSymbol, waypointSymbol)
     console.log(JSON.stringify(getMarketResponse.data.data, undefined, 2))
 })
 
+global.GetShipyard = (async function (systemSymbol: string, waypointSymbol: string, dump: boolean = true) {
+    let getShipyardResponse = await context.systemApi.getShipyard(systemSymbol, waypointSymbol)
+    console.log(JSON.stringify(getShipyardResponse.data.data, undefined, 2))
+})
+
+global.GetJumpGate = (async function (systemSymbol: string, waypointSymbol: string) {
+    let getJumpGateResponse = await context.systemApi.getJumpGate(systemSymbol, waypointSymbol)
+    console.log(JSON.stringify(getJumpGateResponse.data.data, undefined, 2))
+})
+
 global.whoami = (async function(full: boolean = false) {
-    let agentResponse = await agent.getMyAgent()
+    let agentResponse = await context.agentApi.getMyAgent()
     console.log(`[whoami] ${agentResponse.data.data.symbol}`)
     console.log(`[whoami] Credits: ${agentResponse.data.data.credits.toLocaleString()}`)
     console.log(`[whoami] Headquarters: ${agentResponse.data.data.headquarters}`)
     if (full) {
-    console.log(`[whoami] accountId: ${agentResponse.data.data.accountId}`)
+        console.log(`[whoami] accountId: ${agentResponse.data.data.accountId}`)
     }
 })
 
 global.spacetraders = (async function(extra: boolean = true) {
-    let statusResponse = await defaultApi.getStatus()
+    let statusResponse = await context.defaultApi.getStatus()
     let status = statusResponse.data
-    
+
     let now: Date = new Date()
     let nextReset: Date = new Date(status.serverResets.next)
     let timeLefMS = nextReset.getTime() - now.getTime()
@@ -679,9 +723,10 @@ global.spacetraders = (async function(extra: boolean = true) {
     console.log("├ spacetraders.io ┤")
     console.log("└─────────────────┘")
     console.log(`Α: ${status.status}`)
-    console.log(`Ω: Next reset in ${msToHMS(timeLefMS)}`)
-
+    console.log(`Ω: Next reset in ${msToDHMS(timeLefMS)} [${nextReset}]`)
     if (extra) {
+        console.log(`# ${status.stats.agents.toLocaleString()} Agents, ${status.stats.ships.toLocaleString()} Ships`)
+        console.log(`# ${status.stats.systems.toLocaleString()} Systems, ${status.stats.waypoints.toLocaleString()} Waypoints`)
         const mostCredits = status.leaderboards.mostCredits[0]
         const mostCharts = status.leaderboards.mostSubmittedCharts[0]
         const chartPercent = (mostCharts.chartCount * 100) / status.stats.waypoints
@@ -690,7 +735,7 @@ global.spacetraders = (async function(extra: boolean = true) {
         console.log(`├─ CREDITS: ${mostCredits.agentSymbol}, $${mostCredits.credits.toLocaleString()}`)
         console.log(`├─ CHARTS : ${mostCharts.agentSymbol}, ${mostCharts.chartCount} Charts (%${ Math.round((chartPercent + Number.EPSILON) * 10000) / 10000 })`)
     }
-    
+
 })
 
 main()

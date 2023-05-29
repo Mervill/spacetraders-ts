@@ -4,5 +4,7 @@
     "module": "commonjs",
     "outDir": "out",
     "sourceMap": true,
+    "noImplicitReturns": true,
+    "allowUnreachableCode": false,
   }
 }

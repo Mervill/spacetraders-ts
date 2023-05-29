@@ -13,3 +13,10 @@ export function ShortenShipNavFlightMode(value: ShipNavFlightMode): string {
 export function ISOTimeStamp(): string {
     return (new Date().toISOString())
 }
+
+export function SplitShipSymbol(shipSymbol: string) {
+    let seperatorPosition = shipSymbol.lastIndexOf("-")
+    let agentName = shipSymbol.substring(0, seperatorPosition)
+    let shipNumber = shipSymbol.substring(seperatorPosition + 1)
+    return { AgentName: agentName, ShipNumber: shipNumber }
+}
